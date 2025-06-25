@@ -1,21 +1,63 @@
-// index.js - WhatsApp Tour Bot – Wersja produkcyjna 24/7
+// index.js - WhatsApp Tour Bot – Produkcyjna wersja z Telegramem i zarządzaniem
 const qrcode = require('qrcode-terminal');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const mysql = require('mysql2/promise');
 const cron = require('node-cron');
+const TelegramBot = require('node-telegram-bot-api');
 
 const db = mysql.createPool({
   host: '92.113.22.6',
   user: 'u918515209_tour',
-  password: 'Marek2211.!',
+  password: 'TWOJE_HASLO_TUTAJ',
   database: 'u918515209_tour'
 });
 
-const locations = {
+let locations = {
   Stavenhagen: { slug: 'stavenhagen', phone: '491737008662' },
   Hof:         { slug: 'hof',         phone: '4915120200738' },
   Radeburg:    { slug: 'radeburg',    phone: '48668056220' }
 };
+
+const TELEGRAM_BOT_TOKEN = '7688074026:AAFz9aK-WAUYeFnB-yISbSIFZe1_DlVr1dI';
+const TELEGRAM_CHAT_ID = '7531268785'; // np. z @userinfobot
+const telegram = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+
+// Obsługa komend Telegrama
+telegram.onText(/\/status/, (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  telegram.sendMessage(msg.chat.id, '🤖 Bot działa i jest połączony z WhatsApp i bazą danych.');
+});
+
+telegram.onText(/\/restart/, async (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  telegram.sendMessage(msg.chat.id, '♻️ Restartuję bota przez PM2...');
+  require('child_process').exec('pm2 restart tourbot');
+});
+
+telegram.onText(/\/logi/, async (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  telegram.sendMessage(msg.chat.id, '📁 Sprawdź logi komendą: pm2 logs tourbot');
+});
+
+telegram.onText(/\/dodaj (.+)/, (msg, match) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  const [nazwa, slug, phone] = match[1].split(',').map(v => v.trim());
+  if (!nazwa || !slug || !phone) {
+    return telegram.sendMessage(msg.chat.id, '❌ Użycie: /dodaj Nazwa,slug,numer');
+  }
+  locations[nazwa] = { slug, phone };
+  telegram.sendMessage(msg.chat.id, `✅ Dodano lokalizację: ${nazwa} (${slug}) z numerem ${phone}`);
+});
+
+telegram.onText(/\/zmien (.+)/, (msg, match) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  const [nazwa, newPhone] = match[1].split(',').map(v => v.trim());
+  if (!locations[nazwa]) {
+    return telegram.sendMessage(msg.chat.id, `❌ Lokalizacja ${nazwa} nie istnieje.`);
+  }
+  locations[nazwa].phone = newPhone;
+  telegram.sendMessage(msg.chat.id, `🔁 Zmieniono numer w lokalizacji ${nazwa} na ${newPhone}`);
+});
 
 const client = new Client({
   authStrategy: new LocalAuth(),
@@ -29,23 +71,20 @@ client.on('qr', qr => qrcode.generate(qr, { small: true }));
 client.on('ready', async () => {
   console.log('✅ WhatsApp bot gotowy!');
 
-  // Wiadomość startowa do właściciela
   try {
     await client.sendMessage('48451558332@c.us', '🚀 Bot został uruchomiony i działa poprawnie.');
     console.log('📤 Wysłano wiadomość startową do właściciela.');
   } catch (err) {
-    console.error('❌ Błąd przy wysyłaniu wiadomości startowej do właściciela:', err.message);
+    console.error('❌ Błąd przy wysyłaniu wiadomości startowej:', err.message);
   }
 
-  // Wiadomość startowa do grupy
   try {
-    await client.sendMessage('120363419266988965@g.us', '📢 System zur Tourüberwachung ist aktiv und bereit.');
-    console.log('📤 Wysłano wiadomość startową do grupy.');
+    await telegram.sendMessage(TELEGRAM_CHAT_ID, '🤖 Bot WhatsApp został uruchomiony i działa.');
+    console.log('📩 Wysłano status do Telegrama.');
   } catch (err) {
-    console.error('❌ Błąd przy wysyłaniu wiadomości startowej do grupy:', err.message);
+    console.error('❌ Telegram start error:', err.message);
   }
 
-  // Dodatkowo: sprawdzenie nieprzypisanych tur po starcie
   const today = new Date().toISOString().split('T')[0];
   let summary = '';
 
@@ -70,21 +109,17 @@ client.on('ready', async () => {
   if (summary.length > 0) {
     const msg = `📍 Automatische Übersicht zum Start des Systems:\n${summary}\n\n📌 Diese Nachricht wurde automatisch generiert.`;
     try {
-      await client.sendMessage('120363419266988965@g.us', msg);
-      console.log('📤 Wysłano startowy raport nieprzypisanych tur do grupy.');
+      await client.sendMessage('48451558332@c.us', msg);
     } catch (err) {
-      console.error('❌ Błąd przy wysyłaniu raportu do grupy:', err.message);
+      console.error('❌ Błąd przy wysyłaniu raportu startowego:', err.message);
     }
   } else {
     console.log('✅ Wszystkie tury przypisane – brak potrzeby wysyłania raportu.');
   }
 });
 
-// CRON – 7:30 codziennie w dni robocze – przypomnienie o braku przypisań
 cron.schedule('30 7 * * 1-5', async () => {
   const today = new Date().toISOString().split('T')[0];
-  console.log(`🔔 CRON 7:30 – sprawdzam przypisania na ${today}`);
-
   for (const [name, info] of Object.entries(locations)) {
     const [rows] = await db.query(`
       SELECT t.tour_number FROM tours t
@@ -98,36 +133,21 @@ cron.schedule('30 7 * * 1-5', async () => {
       const msgManager = `
 [Standort: ${name}]
 Achtung: Für den heutigen Tag (${today}) wurden nicht alle Touren den Fahrzeugen zugewiesen.
-
-Bitte dringend auf https://tour.ltslogistik.de/?location=${info.slug} ergänzen.
-
-📌 Diese Nachricht wurde automatisch generiert.`.trim();
+Bitte dringend auf https://tour.ltslogistik.de/?location=${info.slug} ergänzen.`;
 
       const msgGroup = `
 [Standort: ${name}]
 Achtung: Für den heutigen Tag (${today}) wurden nicht alle Touren den Fahrzeugen zugewiesen.
+📌 Der Vorarbeiter wurde bereits informiert.`;
 
-📌 Der Vorarbeiter wurde bereits informiert.
-📌 Diese Nachricht wurde automatisch generiert.`.trim();
-
-      try {
-        await client.sendMessage(`${info.phone}@c.us`, msgManager);
-        await client.sendMessage('120363419266988965@g.us', msgGroup);
-        console.log(`📤 Wysłano przypomnienie dla ${name}`);
-      } catch (err) {
-        console.error(`❌ Błąd przy wysyłaniu wiadomości do ${name}:`, err.message);
-      }
-    } else {
-      console.log(`✅ ${name}: wszystkie tury przypisane.`);
+      await client.sendMessage(`${info.phone}@c.us`, msgManager).catch(console.error);
+      await client.sendMessage('120363419266988965@g.us', msgGroup).catch(console.error);
     }
   }
 });
 
-// CRON – 14:00 codziennie w dni robocze – raport o niewyjechanych turach
 cron.schedule('0 14 * * 1-5', async () => {
   const today = new Date().toISOString().split('T')[0];
-  console.log(`📊 CRON 14:00 – sprawdzam niewyjechane tury na ${today}`);
-
   for (const [name, info] of Object.entries(locations)) {
     const [rows] = await db.query(`
       SELECT t.tour_number FROM tours t
@@ -139,18 +159,9 @@ cron.schedule('0 14 * * 1-5', async () => {
       const msgGroup = `
 [Standort: ${name}]
 Bis 14:00 Uhr wurden ${rows.length} Touren noch nicht als abgefahren markiert.
-Bitte überprüfen.
+Bitte überprüfen.`;
 
-📌 Diese Nachricht wurde automatisch generiert.`.trim();
-
-      try {
-        await client.sendMessage('120363419266988965@g.us', msgGroup);
-        console.log(`📤 Wysłano raport 14:00 dla ${name}`);
-      } catch (err) {
-        console.error(`❌ Błąd przy wysyłaniu raportu 14:00 do ${name}:`, err.message);
-      }
-    } else {
-      console.log(`✅ ${name}: wszystkie tury wyjechały.`);
+      await client.sendMessage('120363419266988965@g.us', msgGroup).catch(console.error);
     }
   }
 });
