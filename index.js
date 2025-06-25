@@ -8,7 +8,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const db = mysql.createPool({
   host: '92.113.22.6',
   user: 'u918515209_tour',
-  password: 'TWOJE_HASLO_TUTAJ',
+  password: 'Marek2211.!',
   database: 'u918515209_tour'
 });
 
