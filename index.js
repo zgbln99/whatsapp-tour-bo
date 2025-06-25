@@ -4,6 +4,7 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const mysql = require('mysql2/promise');
 const cron = require('node-cron');
 const TelegramBot = require('node-telegram-bot-api');
+const fs = require('fs');
 
 const db = mysql.createPool({
   host: '92.113.22.6',
@@ -18,11 +19,15 @@ let locations = {
   Radeburg:    { slug: 'radeburg',    phone: '48668056220' }
 };
 
+function saveLocationsToFile() {
+  const content = `let locations = ${JSON.stringify(locations, null, 2)};\nmodule.exports = locations;`;
+  fs.writeFileSync('./locations.js', content, 'utf8');
+}
+
 const TELEGRAM_BOT_TOKEN = '7688074026:AAFz9aK-WAUYeFnB-yISbSIFZe1_DlVr1dI';
-const TELEGRAM_CHAT_ID = '7531268785'; // np. z @userinfobot
+const TELEGRAM_CHAT_ID = '7531268785';
 const telegram = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
-// Obsługa komend Telegrama
 telegram.onText(/\/status/, (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
   telegram.sendMessage(msg.chat.id, '🤖 Bot działa i jest połączony z WhatsApp i bazą danych.');
@@ -36,7 +41,7 @@ telegram.onText(/\/restart/, async (msg) => {
 
 telegram.onText(/\/logi/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-  telegram.sendMessage(msg.chat.id, '📁 Sprawdź logi komendą: pm2 logs tourbot');
+  telegram.sendMessage(msg.chat.id, '📁 Logi: /root/.pm2/logs/tourbot-out.log');
 });
 
 telegram.onText(/\/dodaj (.+)/, (msg, match) => {
@@ -46,6 +51,7 @@ telegram.onText(/\/dodaj (.+)/, (msg, match) => {
     return telegram.sendMessage(msg.chat.id, '❌ Użycie: /dodaj Nazwa,slug,numer');
   }
   locations[nazwa] = { slug, phone };
+  saveLocationsToFile();
   telegram.sendMessage(msg.chat.id, `✅ Dodano lokalizację: ${nazwa} (${slug}) z numerem ${phone}`);
 });
 
@@ -56,7 +62,56 @@ telegram.onText(/\/zmien (.+)/, (msg, match) => {
     return telegram.sendMessage(msg.chat.id, `❌ Lokalizacja ${nazwa} nie istnieje.`);
   }
   locations[nazwa].phone = newPhone;
+  saveLocationsToFile();
   telegram.sendMessage(msg.chat.id, `🔁 Zmieniono numer w lokalizacji ${nazwa} na ${newPhone}`);
+});
+
+telegram.onText(/\/usun (.+)/, (msg, match) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  const nazwa = match[1].trim();
+  if (!locations[nazwa]) {
+    return telegram.sendMessage(msg.chat.id, `❌ Lokalizacja ${nazwa} nie istnieje.`);
+  }
+  delete locations[nazwa];
+  saveLocationsToFile();
+  telegram.sendMessage(msg.chat.id, `🗑️ Lokalizacja ${nazwa} została usunięta.`);
+});
+
+telegram.onText(/\/lista/, (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  let out = '📍 Aktualne lokalizacje:\n';
+  for (const [nazwa, info] of Object.entries(locations)) {
+    out += `• ${nazwa} (slug: ${info.slug}, nr: ${info.phone})\n`;
+  }
+  telegram.sendMessage(msg.chat.id, out);
+});
+
+telegram.onText(/\/podglad/, async (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  const today = new Date().toISOString().split('T')[0];
+  let summary = '';
+  for (const [name, info] of Object.entries(locations)) {
+    try {
+      const [rows] = await db.query(`
+        SELECT t.tour_number FROM tours t
+        LEFT JOIN assignments a ON t.tour_number = a.tour_number
+          AND t.location_id = a.location_id AND a.assignment_date = ?
+        JOIN locations l ON t.location_id = l.id
+        WHERE a.id IS NULL AND l.unique_slug = ?
+      `, [today, info.slug]);
+
+      if (rows.length > 0) {
+        summary += `\n• ${name}: ${rows.length} Touren nicht zugewiesen.`;
+      }
+    } catch (err) {
+      summary += `\n• ${name}: ❌ Błąd sprawdzania`;
+    }
+  }
+  if (summary.length > 0) {
+    telegram.sendMessage(msg.chat.id, `📋 Podgląd nieprzypisanych tur:\n${summary}`);
+  } else {
+    telegram.sendMessage(msg.chat.id, `✅ Wszystkie tury przypisane – brak błędów.`);
+  }
 });
 
 const client = new Client({
