@@ -12,7 +12,7 @@ const db = mysql.createPool({
   database: 'u918515209_tour'
 });
 
-// Lista lokalizacji i numery kierowników
+// Lista lokalizacji i numery kierowników (testowo wszędzie Twój numer)
 const locations = {
   Stavenhagen: {
     slug: 'stavenhagen',
@@ -28,11 +28,11 @@ const locations = {
   },
   Erfurt: {
     slug: 'erfurt',
-    phone: '+49451558332'
+    phone: '+48451558332'
   },
   Magdeburg: {
     slug: 'magdeburg',
-    phone: '+49451558332'
+    phone: '+48451558332'
   }
 };
 
@@ -47,6 +47,14 @@ client.on('qr', qr => qrcode.generate(qr, { small: true }));
 
 client.on('ready', async () => {
   console.log('WhatsApp bot gotowy!');
+
+  // Test połączenia z bazą danych
+  try {
+    const [ping] = await db.query('SELECT 1');
+    console.log('🟢 Połączenie z bazą danych działa.');
+  } catch (err) {
+    console.error('🔴 Błąd połączenia z bazą danych:', err.message);
+  }
 
   await testWysylaniaTur();
 
@@ -65,13 +73,17 @@ async function testWysylaniaTur() {
   const today = new Date().toISOString().split('T')[0];
 
   for (const [name, info] of Object.entries(locations)) {
+    console.log(`⏳ Sprawdzam brakujące tury dla ${name} (${info.slug})...`);
+
     const [rows] = await db.query(`
       SELECT t.tour_number FROM tours t
-      LEFT JOIN assignments a ON t.tour_number = a.tour_number 
+      LEFT JOIN assignments a ON t.tour_number = a.tour_number
         AND t.location_id = a.location_id AND a.assignment_date = ?
       JOIN locations l ON t.location_id = l.id
       WHERE a.id IS NULL AND l.unique_slug = ?
     `, [today, info.slug]);
+
+    console.log(`🔎 Znaleziono braków: ${rows.length}`);
 
     if (rows.length > 0) {
       const msgManager = `
