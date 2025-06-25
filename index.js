@@ -28,11 +28,11 @@ const locations = {
   },
   Erfurt: {
     slug: 'erfurt',
-    phone: '+48451558332'
+    phone: '+49451558332'
   },
   Magdeburg: {
     slug: 'magdeburg',
-    phone: '+48451558332'
+    phone: '+49451558332'
   }
 };
 
@@ -48,6 +48,8 @@ client.on('qr', qr => qrcode.generate(qr, { small: true }));
 client.on('ready', async () => {
   console.log('WhatsApp bot gotowy!');
 
+  await testWysylaniaTur();
+
   // Debug: wypisz dostępne grupy i ich ID
   const chats = await client.getChats();
   console.log("\nLista grup WhatsApp:");
@@ -59,13 +61,13 @@ client.on('ready', async () => {
   });
 });
 
-cron.schedule('30 7 * * 1-5', async () => {
+async function testWysylaniaTur() {
   const today = new Date().toISOString().split('T')[0];
 
   for (const [name, info] of Object.entries(locations)) {
     const [rows] = await db.query(`
       SELECT t.tour_number FROM tours t
-      LEFT JOIN assignments a ON t.tour_number = a.tour_number
+      LEFT JOIN assignments a ON t.tour_number = a.tour_number 
         AND t.location_id = a.location_id AND a.assignment_date = ?
       JOIN locations l ON t.location_id = l.id
       WHERE a.id IS NULL AND l.unique_slug = ?
@@ -88,10 +90,17 @@ Achtung: Für den heutigen Tag (${today}) wurden nicht alle Touren den Fahrzeuge
 📌 Diese Nachricht wurde automatisch generiert.`.trim();
 
       await client.sendMessage(`${info.phone}@c.us`, msgManager);
-      // await client.sendMessage('GROUP_ID@g.us', msgGroup); // W przyszłości dodaj ID grupy
-      console.log(`Wiadomość wysłana do ${name}`);
+      await client.sendMessage('120363419266988965@g.us', msgGroup);
+
+      console.log(`🔔 Test: wiadomość wysłana do ${name}`);
+    } else {
+      console.log(`✔️ ${name} – wszystkie tury przypisane.`);
     }
   }
+}
+
+cron.schedule('30 7 * * 1-5', async () => {
+  await testWysylaniaTur();
 });
 
 client.initialize();
