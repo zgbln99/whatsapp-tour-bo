@@ -85,13 +85,62 @@ telegram.onText(/\/usun (.+)/, (msg, match) => {
 
 telegram.onText(/\/lista/, (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-  let out = '📍 Aktuelle Standorte:
-';
+  let out = '📍 Aktuelle Standorte:\n';
   for (const [nazwa, info] of Object.entries(locations)) {
-    out += `• ${nazwa} (Slug: ${info.slug}, Nummer: ${info.phone})
-`;
+    out += `• ${nazwa} (Slug: ${info.slug}, Nummer: ${info.phone})\n`;
   }
   telegram.sendMessage(msg.chat.id, out);
+});
+
+telegram.onText(/\/test_kierownik (.+)/, async (msg, match) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  const nazwa = match[1].trim();
+  const info = locations[nazwa];
+  if (!info) return telegram.sendMessage(msg.chat.id, `❌ Standort ${nazwa} existiert nicht.`);
+
+  const today = new Date().toISOString().split('T')[0];
+  const [rows] = await db.query(`
+    SELECT t.tour_number FROM tours t
+    LEFT JOIN assignments a ON t.tour_number = a.tour_number
+      AND t.location_id = a.location_id AND a.assignment_date = ?
+    JOIN locations l ON t.location_id = l.id
+    WHERE a.id IS NULL AND l.unique_slug = ?
+  `, [today, info.slug]);
+
+  const msg = `
+[Standort: ${nazwa}]
+Hinweis: Für heute, den ${today}, gibt es Touren, die nicht gestartet sind (${rows.length}).
+Bitte trage die Daten dringend auf der folgenden Seite ein – https://tour.ltslogistik.de/?location=${info.slug}.
+
+Automatische Nachricht. Falls alles korrekt ist und der Grund für die nicht gestarteten Touren bereits der Geschäftsleitung mitgeteilt wurde, bitte diese Nachricht ignorieren.`;
+
+  await client.sendMessage(`${info.phone}@c.us`, msg).catch(console.error);
+  telegram.sendMessage(msg.chat.id, `📤 Nachricht an ${nazwa} wurde gesendet.`);
+});
+
+telegram.onText(/\/test_grupa/, async (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  const today = new Date().toISOString().split('T')[0];
+  let text = `📋 Statusübersicht für ${today}:\n`;
+  for (const [name, info] of Object.entries(locations)) {
+    const [notDeparted] = await db.query(`
+      SELECT COUNT(*) AS count FROM tours t
+      JOIN locations l ON t.location_id = l.id
+      WHERE l.unique_slug = ? AND t.date = ? AND t.departure_status IS NULL
+    `, [info.slug, today]);
+
+    const [departed] = await db.query(`
+      SELECT COUNT(*) AS count FROM tours t
+      JOIN locations l ON t.location_id = l.id
+      WHERE l.unique_slug = ? AND t.date = ? AND t.departure_status IS NOT NULL
+    `, [info.slug, today]);
+
+    text += `\n[Standort: ${name}]\nGestartet: ${departed[0].count}, Nicht gestartet: ${notDeparted[0].count}`;
+  }
+  text += '\n\nAutomatische Nachricht. Der Vorarbeiter wurde über das Fehlen der Tour-Zuordnung informiert.';
+
+  await client.sendMessage('120363419266988965@g.us', text).catch(console.error);
+  telegram.sendMessage(msg.chat.id, '📤 Gruppenmeldung wurde gesendet.');
 });
 
 const client = new Client({
@@ -123,8 +172,10 @@ cron.schedule('30 7 * * 1-5', async () => {
     if (rows.length > 0) {
       const msg = `
 [Standort: ${name}]
-⚠️ Für heute (${today}) wurden ${rows.length} Touren nicht zugewiesen (nicht abgefahren).
-Bitte dringend unter https://tour.ltslogistik.de/?location=${info.slug} prüfen und nachtragen.`;
+Hinweis: Für heute, den ${today}, gibt es Touren, die nicht gestartet sind (${rows.length}).
+Bitte trage die Daten dringend auf der folgenden Seite ein – https://tour.ltslogistik.de/?location=${info.slug}.
+
+Automatische Nachricht. Falls alles korrekt ist und der Grund für die nicht gestarteten Touren bereits der Geschäftsleitung mitgeteilt wurde, bitte diese Nachricht ignorieren.`;
       await client.sendMessage(`${info.phone}@c.us`, msg).catch(console.error);
     }
   }
@@ -132,8 +183,6 @@ Bitte dringend unter https://tour.ltslogistik.de/?location=${info.slug} prüfen 
 
 cron.schedule('30 10 * * 1-5', async () => {
   const today = new Date().toISOString().split('T')[0];
-  let summary = '📦 *Tour-Status für heute (' + today + ')*\n';
-
   for (const [name, info] of Object.entries(locations)) {
     const [notDeparted] = await db.query(`
       SELECT COUNT(*) AS count FROM tours t
@@ -147,13 +196,15 @@ cron.schedule('30 10 * * 1-5', async () => {
       WHERE l.unique_slug = ? AND t.date = ? AND t.departure_status IS NOT NULL
     `, [info.slug, today]);
 
-    summary += `
-📍 ${name}:
-✅ Abgefahren: ${departed[0].count}
-❌ Nicht abgefahren: ${notDeparted[0].count}`;
-  }
+    const msg = `
+Hinweis: Für heute, den ${today}, gibt es für den Standort ${name} Touren, die nicht gestartet sind.
 
-  await client.sendMessage('120363419266988965@g.us', summary).catch(console.error);
+Anzahl der gestarteten Touren: ${departed[0].count}
+Anzahl der nicht gestarteten Touren: ${notDeparted[0].count}
+
+Automatische Nachricht. Der Vorarbeiter wurde über das Fehlen der Tour-Zuordnung informiert.`;
+    await client.sendMessage('120363419266988965@g.us', msg).catch(console.error);
+  }
 }, { timezone: 'Europe/Berlin' });
 
 client.initialize();
