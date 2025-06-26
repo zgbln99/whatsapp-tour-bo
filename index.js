@@ -198,15 +198,48 @@ telegram.onText(/\/test_db/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
 
   try {
-    const [result] = await db.query('SELECT COUNT(*) as count FROM tours WHERE date = CURDATE()');
+    // Sprawdź strukturę tabeli tours
+    const [columns] = await db.query('DESCRIBE tours');
+    let columnsInfo = '🗄️ Kolumny tabeli tours:\n';
+    columns.forEach(col => {
+      columnsInfo += '• ' + col.Field + ' (' + col.Type + ')\n';
+    });
+
     const [locations_count] = await db.query('SELECT COUNT(*) as count FROM locations');
+    const [tours_count] = await db.query('SELECT COUNT(*) as count FROM tours');
 
     telegram.sendMessage(msg.chat.id, '🗄️ Status bazy danych:\n' +
       '• Połączenie: ✅ OK\n' +
-      '• Toury dzisiaj: ' + result[0].count + '\n' +
-      '• Lokalizacje: ' + locations_count[0].count);
+      '• Wszystkie toury: ' + tours_count[0].count + '\n' +
+      '• Lokalizacje: ' + locations_count[0].count + '\n\n' + columnsInfo);
   } catch (error) {
     telegram.sendMessage(msg.chat.id, '❌ Błąd bazy danych: ' + error.message);
+  }
+});
+
+// Telegram - Sprawdź strukturę assignments
+telegram.onText(/\/struktura/, async (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+
+  try {
+    const [tours_cols] = await db.query('DESCRIBE tours');
+    const [assignments_cols] = await db.query('DESCRIBE assignments');
+    const [locations_cols] = await db.query('DESCRIBE locations');
+
+    let response = '📋 Struktura tabel:\n\n';
+
+    response += '🚛 TOURS:\n';
+    tours_cols.forEach(col => response += '• ' + col.Field + '\n');
+
+    response += '\n📋 ASSIGNMENTS:\n';
+    assignments_cols.forEach(col => response += '• ' + col.Field + '\n');
+
+    response += '\n📍 LOCATIONS:\n';
+    locations_cols.forEach(col => response += '• ' + col.Field + '\n');
+
+    telegram.sendMessage(msg.chat.id, response);
+  } catch (error) {
+    telegram.sendMessage(msg.chat.id, '❌ Błąd: ' + error.message);
   }
 });
 telegram.onText(/\/podglad/, async (msg) => {
@@ -288,14 +321,26 @@ telegram.onText(/\/test_grupa/, async (msg) => {
       const info = locations[name];
       console.log('Przetwarzanie lokalizacji:', name, info);
 
-      const queryNotDeparted = 'SELECT COUNT(*) AS count FROM tours t JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ? AND t.date = ? AND t.departure_status IS NULL';
-      const [notDeparted] = await db.query(queryNotDeparted, [info.slug, today]);
+      // Uproszczone zapytania - sprawdzają tylko assignments na dziś
+      try {
+        // Sprawdź wszystkie toury dla lokalizacji
+        const queryAllTours = 'SELECT COUNT(*) AS count FROM tours t JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ?';
+        const [allTours] = await db.query(queryAllTours, [info.slug]);
 
-      const queryDeparted = 'SELECT COUNT(*) AS count FROM tours t JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ? AND t.date = ? AND t.departure_status IS NOT NULL';
-      const [departed] = await db.query(queryDeparted, [info.slug, today]);
+        // Sprawdź przypisane toury na dziś
+        const queryAssigned = 'SELECT COUNT(*) AS count FROM assignments a JOIN tours t ON a.tour_number = t.tour_number JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ? AND a.assignment_date = ?';
+        const [assignedTours] = await db.query(queryAssigned, [info.slug, today]);
 
-      console.log('Dane dla', name + ':', 'Gestartet:', departed[0].count, 'Nicht gestartet:', notDeparted[0].count);
-      text += '\n[Standort: ' + name + ']\nGestartet: ' + departed[0].count + ', Nicht gestartet: ' + notDeparted[0].count;
+        const total = allTours[0].count;
+        const assigned = assignedTours[0].count;
+        const notAssigned = total - assigned;
+
+        console.log('Dane dla', name + ':', 'Wszystkie:', total, 'Przypisane:', assigned, 'Nieprzypisane:', notAssigned);
+        text += '\n[Standort: ' + name + ']\nZugewiesen: ' + assigned + ', Nicht zugewiesen: ' + notAssigned;
+      } catch (locError) {
+        console.error('Błąd dla lokalizacji', name + ':', locError);
+        text += '\n[Standort: ' + name + ']\nBłąd pobierania danych';
+      }
     }
 
     text += '\n\nAutomatische Nachricht. Der Vorarbeiter wurde über das Fehlen der Tour-Zuordnung informiert.';
