@@ -165,9 +165,9 @@ function createInspectionMessage(inspections) {
     // Przygotuj opisy dla każdego typu przeglądu
     const descriptions = vehicleInspections.map(insp => {
       if (insp.isExpired) {
-        return `${insp.typ} *überfällig seit ${Math.abs(insp.daysDiff)} Tagen*`;
+        return `${insp.typ}: *${Math.abs(insp.daysDiff)} Tage überfällig*`;
       } else {
-        return `${insp.typ} noch *${insp.daysDiff} Tage*`;
+        return `${insp.typ}: *noch ${insp.daysDiff} Tage*`;
       }
     });
 
@@ -197,49 +197,51 @@ function createInspectionMessage(inspections) {
   const expiring14 = groupedInspections.filter(v => !v.hasExpired && v.hasExpiring14);
   const expiring30 = groupedInspections.filter(v => !v.hasExpired && !v.hasExpiring14 && v.hasExpiring30);
 
-  let message = '┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n';
-  message += '┃  🚗 *TECHNISCHE PRÜFUNGEN*  ┃\n';
-  message += '┃    📊 _Wochenbericht_        ┃\n';
-  message += '┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n\n';
-  message += `📅 *Datum:* \`${today}\`\n\n`;
+  let message = '🚗 *TECHNISCHE PRÜFUNGEN*\n';
+  message += '📊 _Wochenbericht_\n\n';
+  message += `📅 *Datum:* ${today}\n`;
+  message += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n\n';
 
   if (expired.length > 0) {
-    message += '🚨 *ÜBERFÄLLIG* `(' + expired.length + ' Fahrzeuge)`\n';
-    message += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    message += `🚨 *ÜBERFÄLLIG* (${expired.length})\n`;
     expired.forEach(vehicle => {
-      message += `🔴 *${vehicle.license_plate}* (${vehicle.types})\n`;
-      message += `   ${vehicle.descriptions.join('\n   ')}\n\n`;
+      message += `🔴 *${vehicle.license_plate}*\n`;
+      vehicle.descriptions.forEach(desc => {
+        message += `   ${desc}\n`;
+      });
+      message += '\n';
     });
   }
 
   if (expiring14.length > 0) {
-    message += '🔥 *DRINGEND - BIS 14 TAGE* `(' + expiring14.length + ' Fahrzeuge)`\n';
-    message += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    message += `🔥 *DRINGEND - BIS 14 TAGE* (${expiring14.length})\n`;
     expiring14.forEach(vehicle => {
-      message += `🟠 *${vehicle.license_plate}* (${vehicle.types})\n`;
-      message += `   ${vehicle.descriptions.join('\n   ')}\n\n`;
+      message += `🟠 *${vehicle.license_plate}*\n`;
+      vehicle.descriptions.forEach(desc => {
+        message += `   ${desc}\n`;
+      });
+      message += '\n';
     });
   }
 
   if (expiring30.length > 0) {
-    message += '⚠️ *BIS 30 TAGE* `(' + expiring30.length + ' Fahrzeuge)`\n';
-    message += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    message += `⚠️ *BIS 30 TAGE* (${expiring30.length})\n`;
     expiring30.forEach(vehicle => {
-      message += `🟡 *${vehicle.license_plate}* (${vehicle.types})\n`;
-      message += `   ${vehicle.descriptions.join('\n   ')}\n\n`;
+      message += `🟡 *${vehicle.license_plate}*\n`;
+      vehicle.descriptions.forEach(desc => {
+        message += `   ${desc}\n`;
+      });
+      message += '\n';
     });
   }
 
   if (expired.length === 0 && expiring30.length === 0 && expiring14.length === 0) {
-    message += '┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n';
-    message += '┃  ✅ *Alle Prüfungen sind*  ┃\n';
-    message += '┃      *aktuell!*            ┃\n';
-    message += '┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n\n';
+    message += '✅ *Alle Prüfungen sind aktuell!*\n\n';
   }
 
-  message += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
-  message += '🔗 *Panel:* https://fleet.ltslogistik.de/\n\n';
-  message += '_Automatische Nachricht - jeden Montag um 10:00 Uhr._';
+  message += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n';
+  message += '🔗 Panel: https://fleet.ltslogistik.de/\n\n';
+  message += '_Automatische Nachricht_\n_Jeden Montag um 10:00 Uhr_';
 
   return message;
 }
@@ -297,7 +299,7 @@ telegram.onText(/\/status/, (msg) => {
 telegram.onText(/\/czas/, (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
   const time = new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' });
-  telegram.sendMessage(msg.chat.id, '🕒 Serverzeit (Europe/Berlin): ' + time);
+  telegram.sendMessage(msg.chat.id, `🕒 *SERVERZEIT*\n\n📅 ${time}\n🌍 Europe/Berlin`);
 });
 
 // Restart bota
@@ -365,11 +367,13 @@ telegram.onText(/\/usun (.+)/, (msg, match) => {
 // Lista lokalizacji
 telegram.onText(/\/lista/, (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-  let out = '📍 Aktuelle Standorte:\n';
+  let out = '📍 *STANDORTE*\n\n';
 
   for (const nazwa in locations) {
     const info = locations[nazwa];
-    out += '• ' + nazwa + ' (Slug: ' + info.slug + ', Nummer: ' + info.phone + ')\n';
+    out += `🏢 *${nazwa}*\n`;
+    out += `   Slug: ${info.slug}\n`;
+    out += `   Tel: ${info.phone}\n\n`;
   }
 
   telegram.sendMessage(msg.chat.id, out);
@@ -383,7 +387,10 @@ telegram.onText(/\/podglad/, async (msg) => {
 
   try {
     const today = new Date().toISOString().split('T')[0];
-    let summary = '';
+    let summary = '📋 *TOUR ÜBERSICHT*\n\n';
+    summary += `📅 Datum: ${today}\n\n`;
+
+    let hasIssues = false;
 
     for (const name in locations) {
       const info = locations[name];
@@ -391,15 +398,20 @@ telegram.onText(/\/podglad/, async (msg) => {
       const [rows] = await db.query(query, [today, info.slug]);
 
       if (rows[0].count > 0) {
-        summary += '\n• ' + name + ': ' + rows[0].count + ' Touren nicht zugewiesen.';
+        summary += `🔴 *${name}*\n`;
+        summary += `   ${rows[0].count} nicht zugewiesen\n\n`;
+        hasIssues = true;
+      } else {
+        summary += `🟢 *${name}*\n`;
+        summary += `   Alle zugewiesen\n\n`;
       }
     }
 
-    if (summary.length > 0) {
-      telegram.sendMessage(msg.chat.id, '📋 Übersicht nicht zugewiesener Touren:\n' + summary);
-    } else {
-      telegram.sendMessage(msg.chat.id, '✅ Alle Touren sind zugewiesen.');
+    if (!hasIssues) {
+      summary += '✅ *Alle Standorte OK*';
     }
+
+    telegram.sendMessage(msg.chat.id, summary);
   } catch (error) {
     console.error('Błąd w /podglad:', error);
     telegram.sendMessage(msg.chat.id, '❌ Błąd: ' + error.message);
@@ -422,16 +434,17 @@ telegram.onText(/\/test_kierownik (.+)/, async (msg, match) => {
     const query = 'SELECT COUNT(*) as count FROM tours t JOIN locations l ON t.location_id = l.id LEFT JOIN assignments a ON t.tour_number = a.tour_number AND t.location_id = a.location_id AND a.assignment_date = ? WHERE a.id IS NULL AND l.unique_slug = ?';
     const [rows] = await db.query(query, [today, info.slug]);
 
-    const msgText = '┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n' +
-      '┃  ⚠️ *TOUR ERINNERUNG*     ┃\n' +
-      '┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n\n' +
+    const msgText = '⚠️ *TOUR ERINNERUNG*\n\n' +
       `📍 *Standort:* ${nazwa}\n` +
-      `📅 *Datum:* \`${today}\`\n\n` +
-      `🚨 *Hinweis:* Für heute gibt es *${rows[0].count} Touren*, die nicht gestartet sind.\n\n` +
-      '📋 *Bitte trage die Daten dringend ein:*\n' +
+      `📅 *Datum:* ${today}\n\n` +
+      `🚨 *Hinweis:*\n` +
+      `Heute gibt es *${rows[0].count} Touren*,\n` +
+      `die nicht gestartet sind.\n\n` +
+      '📋 *Bitte Daten eintragen:*\n' +
       `🔗 https://tour.ltslogistik.de/?location=${info.slug}\n\n` +
-      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
-      '_Automatische Nachricht. Falls alles korrekt ist und der Grund für die nicht gestarteten Touren bereits der Geschäftsleitung mitgeteilt wurde, bitte diese Nachricht ignorieren._';
+      '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n' +
+      '_Automatische Nachricht_\n\n' +
+      '_Falls alles korrekt ist und der Grund bereits der Geschäftsleitung mitgeteilt wurde, bitte ignorieren._';
 
     await client.sendMessage(info.phone + '@c.us', msgText);
     telegram.sendMessage(msg.chat.id, '📤 Nachricht an ' + nazwa + ' wurde gesendet.');
@@ -452,10 +465,9 @@ telegram.onText(/\/test_grupa/, async (msg) => {
     }
 
     const today = new Date().toISOString().split('T')[0];
-    let text = '┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n';
-    text += '┃  📋 *TOUR STATUSÜBERSICHT* ┃\n';
-    text += '┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n\n';
-    text += `📅 *Datum:* \`${today}\`\n\n`;
+    let text = '📋 *TOUR STATUSÜBERSICHT*\n\n';
+    text += `📅 *Datum:* ${today}\n`;
+    text += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n\n';
 
     for (const name in locations) {
       const info = locations[name];
@@ -473,16 +485,18 @@ telegram.onText(/\/test_grupa/, async (msg) => {
 
         const status = notAssigned > 0 ? '🔴' : '🟢';
         text += `${status} *${name}*\n`;
-        text += `   Zugewiesen: *${assigned}* | Nicht zugewiesen: *${notAssigned}*\n\n`;
+        text += `   Zugewiesen: *${assigned}*\n`;
+        text += `   Nicht zugewiesen: *${notAssigned}*\n\n`;
       } catch (locError) {
         console.error('Błąd dla lokalizacji', name + ':', locError);
         text += `🔴 *${name}*\n`;
-        text += '   _Fehler beim Abrufen der Daten_\n\n';
+        text += '   _Fehler beim Abrufen_\n\n';
       }
     }
 
-    text += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
-    text += '_Automatische Nachricht. Der Vorarbeiter wurde über das Fehlen der Tour-Zuordnung informiert._';
+    text += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n';
+    text += '_Automatische Nachricht_\n';
+    text += '_Der Vorarbeiter wurde informiert_';
 
     await client.sendMessage(TOUR_GROUP_ID, text);
     telegram.sendMessage(msg.chat.id, '📤 Gruppenmeldung wurde gesendet.');
@@ -498,13 +512,13 @@ telegram.onText(/\/test_grupa/, async (msg) => {
 // Status przegladów
 telegram.onText(/\/fleet_status/, (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-  telegram.sendMessage(msg.chat.id, '🚗 Fleet Überwachung ist aktiv\n📅 Automatische Berichte: jeden Montag 10:00 Uhr');
+  telegram.sendMessage(msg.chat.id, '🚗 *Fleet Überwachung*\n\n✅ Status: Aktiv\n📅 Automatisch: Jeden Montag 10:00\n📱 Format: Mobile-optimiert');
 });
 
 // Test przegladów
 telegram.onText(/\/test_fleet/, (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-  telegram.sendMessage(msg.chat.id, '🔄 Starte Test der Prüfungen...');
+  telegram.sendMessage(msg.chat.id, '🔄 *Starte Test*\nPrüfungen werden gesendet...');
   checkAndSendInspectionReport();
 });
 
@@ -533,24 +547,26 @@ telegram.onText(/\/fleet_preview/, async (msg) => {
       group.some(insp => insp.isExpiringSoon) && !group.some(insp => insp.isExpired)
     ).length;
 
-    let preview = '🚗 Vorschau Prüfungen:\n';
-    preview += '• Fahrzeuge gesamt: ' + totalVehicles + '\n';
-    preview += '• Mit überfälligen Prüfungen: ' + expiredVehicles + '\n';
-    preview += '• Mit ablaufenden Prüfungen: ' + expiringVehicles + '\n\n';
+    let preview = '🚗 *VORSCHAU PRÜFUNGEN*\n\n';
+    preview += '📊 *Statistik:*\n';
+    preview += `   Fahrzeuge gesamt: *${totalVehicles}*\n`;
+    preview += `   Mit überfälligen: *${expiredVehicles}*\n`;
+    preview += `   Mit ablaufenden: *${expiringVehicles}*\n\n`;
 
     if (expiredVehicles > 0) {
-      preview += 'Überfällige (Beispiel):\n';
+      preview += '🚨 *Überfällige (Beispiele):*\n';
       let count = 0;
       for (const [plate, group] of Object.entries(vehicleGroups)) {
         if (count >= 5) break;
         if (group.some(insp => insp.isExpired)) {
           const expiredTypes = group.filter(insp => insp.isExpired).map(insp => insp.typ);
           const maxDays = Math.max(...group.filter(insp => insp.isExpired).map(insp => Math.abs(insp.daysDiff)));
-          preview += '• ' + plate + ' (' + expiredTypes.join(', ') + ') - bis zu ' + maxDays + ' Tage\n';
+          preview += `🔴 ${plate} (${expiredTypes.join(', ')})\n`;
+          preview += `   bis zu ${maxDays} Tage\n\n`;
           count++;
         }
       }
-      if (expiredVehicles > 5) preview += '... und ' + (expiredVehicles - 5) + ' weitere Fahrzeuge\n';
+      if (expiredVehicles > 5) preview += `_... und ${(expiredVehicles - 5)} weitere Fahrzeuge_\n`;
     }
 
     telegram.sendMessage(msg.chat.id, preview);
@@ -568,10 +584,14 @@ telegram.onText(/\/whatsapp_status/, async (msg) => {
   try {
     const state = await client.getState();
     const info = await client.getWWebVersion();
-    telegram.sendMessage(msg.chat.id, '📱 WhatsApp Status:\n' +
-      '• Stan: ' + state + '\n' +
-      '• Wersja: ' + info + '\n' +
-      '• Czas: ' + new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' }));
+    const time = new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' });
+
+    telegram.sendMessage(msg.chat.id,
+      '📱 *WHATSAPP STATUS*\n\n' +
+      `✅ *Stan:* ${state}\n` +
+      `📦 *Wersja:* ${info}\n` +
+      `🕒 *Czas:* ${time}`
+    );
   } catch (error) {
     telegram.sendMessage(msg.chat.id, '❌ Nie można pobrać statusu WhatsApp: ' + error.message);
   }
@@ -585,17 +605,18 @@ telegram.onText(/\/grupy/, async (msg) => {
     const chats = await client.getChats();
     const groups = chats.filter(chat => chat.isGroup);
 
-    let groupList = '👥 Dostępne grupy WhatsApp:\n';
+    let groupList = '👥 *GRUPY WHATSAPP*\n\n';
     groups.forEach((group, index) => {
-      if (index < 10) {
-        groupList += '• ' + group.name + ' (ID: ' + group.id._serialized + ')\n';
+      if (index < 8) {
+        groupList += `🔹 *${group.name}*\n`;
+        groupList += `   ID: \`${group.id._serialized}\`\n\n`;
       }
     });
 
     if (groups.length === 0) {
-      groupList += 'Brak dostępnych grup.';
-    } else if (groups.length > 10) {
-      groupList += '\n... i ' + (groups.length - 10) + ' więcej grup.';
+      groupList += '❌ Brak dostępnych grup.';
+    } else if (groups.length > 8) {
+      groupList += `_... i ${(groups.length - 8)} więcej grup_`;
     }
 
     telegram.sendMessage(msg.chat.id, groupList);
@@ -610,18 +631,20 @@ telegram.onText(/\/test_db/, async (msg) => {
 
   try {
     const [columns] = await db.query('DESCRIBE tours');
-    let columnsInfo = '🗄️ Kolumny tabeli tours:\n';
-    columns.forEach(col => {
-      columnsInfo += '• ' + col.Field + ' (' + col.Type + ')\n';
+    let columnsInfo = '📋 *TABELA TOURS:*\n\n';
+    columns.slice(0, 8).forEach(col => {
+      columnsInfo += `• ${col.Field} (${col.Type})\n`;
     });
+    if (columns.length > 8) {
+      columnsInfo += `... i ${columns.length - 8} więcej\n`;
+    }
 
     const [locations_count] = await db.query('SELECT COUNT(*) as count FROM locations');
     const [tours_count] = await db.query('SELECT COUNT(*) as count FROM tours');
 
-    telegram.sendMessage(msg.chat.id, '🗄️ Status bazy danych:\n' +
-      '• Połączenie: ✅ OK\n' +
-      '• Wszystkie toury: ' + tours_count[0].count + '\n' +
-      '• Lokalizacje: ' + locations_count[0].count + '\n\n' + columnsInfo);
+    const summary = `🗄️ *BAZA DANYCH*\n\n✅ *Status:* Połączono\n🚛 *Toury:* ${tours_count[0].count}\n📍 *Lokalizacje:* ${locations_count[0].count}\n\n`;
+
+    telegram.sendMessage(msg.chat.id, summary + columnsInfo);
   } catch (error) {
     telegram.sendMessage(msg.chat.id, '❌ Błąd bazy danych: ' + error.message);
   }
