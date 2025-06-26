@@ -165,9 +165,9 @@ function createInspectionMessage(inspections) {
     // Przygotuj opisy dla każdego typu przeglądu
     const descriptions = vehicleInspections.map(insp => {
       if (insp.isExpired) {
-        return insp.typ + ' überfällig seit ' + Math.abs(insp.daysDiff) + ' Tagen';
+        return `${insp.typ} *überfällig seit ${Math.abs(insp.daysDiff)} Tagen*`;
       } else {
-        return insp.typ + ' noch ' + insp.daysDiff + ' Tage';
+        return `${insp.typ} noch *${insp.daysDiff} Tage*`;
       }
     });
 
@@ -197,39 +197,49 @@ function createInspectionMessage(inspections) {
   const expiring14 = groupedInspections.filter(v => !v.hasExpired && v.hasExpiring14);
   const expiring30 = groupedInspections.filter(v => !v.hasExpired && !v.hasExpiring14 && v.hasExpiring30);
 
-  let message = '🚗 TECHNISCHE PRÜFUNGEN - Wochenbericht\n';
-  message += '📅 Datum: ' + today + '\n\n';
+  let message = '┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n';
+  message += '┃  🚗 *TECHNISCHE PRÜFUNGEN*  ┃\n';
+  message += '┃    📊 _Wochenbericht_        ┃\n';
+  message += '┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n\n';
+  message += `📅 *Datum:* \`${today}\`\n\n`;
 
   if (expired.length > 0) {
-    message += '🚨 ÜBERFÄLLIG (' + expired.length + '):\n';
+    message += '🚨 *ÜBERFÄLLIG* `(' + expired.length + ' Fahrzeuge)`\n';
+    message += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
     expired.forEach(vehicle => {
-      message += '• ' + vehicle.license_plate + ' (' + vehicle.types + ') - ' + vehicle.descriptions.join(', ') + '\n';
+      message += `🔴 *${vehicle.license_plate}* (${vehicle.types})\n`;
+      message += `   ${vehicle.descriptions.join('\n   ')}\n\n`;
     });
-    message += '\n';
   }
 
   if (expiring14.length > 0) {
-    message += '🔥 DRINGEND - BIS 14 TAGE (' + expiring14.length + '):\n';
+    message += '🔥 *DRINGEND - BIS 14 TAGE* `(' + expiring14.length + ' Fahrzeuge)`\n';
+    message += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
     expiring14.forEach(vehicle => {
-      message += '• ' + vehicle.license_plate + ' (' + vehicle.types + ') - ' + vehicle.descriptions.join(', ') + '\n';
+      message += `🟠 *${vehicle.license_plate}* (${vehicle.types})\n`;
+      message += `   ${vehicle.descriptions.join('\n   ')}\n\n`;
     });
-    message += '\n';
   }
 
   if (expiring30.length > 0) {
-    message += '⚠️ BIS 30 TAGE (' + expiring30.length + '):\n';
+    message += '⚠️ *BIS 30 TAGE* `(' + expiring30.length + ' Fahrzeuge)`\n';
+    message += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
     expiring30.forEach(vehicle => {
-      message += '• ' + vehicle.license_plate + ' (' + vehicle.types + ') - ' + vehicle.descriptions.join(', ') + '\n';
+      message += `🟡 *${vehicle.license_plate}* (${vehicle.types})\n`;
+      message += `   ${vehicle.descriptions.join('\n   ')}\n\n`;
     });
-    message += '\n';
   }
 
   if (expired.length === 0 && expiring30.length === 0 && expiring14.length === 0) {
-    message += '✅ Alle Prüfungen sind aktuell!\n\n';
+    message += '┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n';
+    message += '┃  ✅ *Alle Prüfungen sind*  ┃\n';
+    message += '┃      *aktuell!*            ┃\n';
+    message += '┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n\n';
   }
 
-  message += '🔗 Panel: https://fleet.ltslogistik.de/\n\n';
-  message += 'Automatische Nachricht - jeden Montag um 10:00 Uhr.';
+  message += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+  message += '🔗 *Panel:* https://fleet.ltslogistik.de/\n\n';
+  message += '_Automatische Nachricht - jeden Montag um 10:00 Uhr._';
 
   return message;
 }
@@ -412,10 +422,16 @@ telegram.onText(/\/test_kierownik (.+)/, async (msg, match) => {
     const query = 'SELECT COUNT(*) as count FROM tours t JOIN locations l ON t.location_id = l.id LEFT JOIN assignments a ON t.tour_number = a.tour_number AND t.location_id = a.location_id AND a.assignment_date = ? WHERE a.id IS NULL AND l.unique_slug = ?';
     const [rows] = await db.query(query, [today, info.slug]);
 
-    const msgText = '[Standort: ' + nazwa + ']\n' +
-      'Hinweis: Für heute, den ' + today + ', gibt es Touren, die nicht gestartet sind (' + rows[0].count + ').\n' +
-      'Bitte trage die Daten dringend auf der folgenden Seite ein – https://tour.ltslogistik.de/?location=' + info.slug + '.\n\n' +
-      'Automatische Nachricht. Falls alles korrekt ist und der Grund für die nicht gestarteten Touren bereits der Geschäftsleitung mitgeteilt wurde, bitte diese Nachricht ignorieren.';
+    const msgText = '┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n' +
+      '┃  ⚠️ *TOUR ERINNERUNG*     ┃\n' +
+      '┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n\n' +
+      `📍 *Standort:* ${nazwa}\n` +
+      `📅 *Datum:* \`${today}\`\n\n` +
+      `🚨 *Hinweis:* Für heute gibt es *${rows[0].count} Touren*, die nicht gestartet sind.\n\n` +
+      '📋 *Bitte trage die Daten dringend ein:*\n' +
+      `🔗 https://tour.ltslogistik.de/?location=${info.slug}\n\n` +
+      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
+      '_Automatische Nachricht. Falls alles korrekt ist und der Grund für die nicht gestarteten Touren bereits der Geschäftsleitung mitgeteilt wurde, bitte diese Nachricht ignorieren._';
 
     await client.sendMessage(info.phone + '@c.us', msgText);
     telegram.sendMessage(msg.chat.id, '📤 Nachricht an ' + nazwa + ' wurde gesendet.');
@@ -436,7 +452,10 @@ telegram.onText(/\/test_grupa/, async (msg) => {
     }
 
     const today = new Date().toISOString().split('T')[0];
-    let text = '📋 Statusübersicht für ' + today + ':\n';
+    let text = '┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n';
+    text += '┃  📋 *TOUR STATUSÜBERSICHT* ┃\n';
+    text += '┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n\n';
+    text += `📅 *Datum:* \`${today}\`\n\n`;
 
     for (const name in locations) {
       const info = locations[name];
@@ -452,14 +471,18 @@ telegram.onText(/\/test_grupa/, async (msg) => {
         const assigned = assignedTours[0].count;
         const notAssigned = total - assigned;
 
-        text += '\n[Standort: ' + name + ']\nZugewiesen: ' + assigned + ', Nicht zugewiesen: ' + notAssigned;
+        const status = notAssigned > 0 ? '🔴' : '🟢';
+        text += `${status} *${name}*\n`;
+        text += `   Zugewiesen: *${assigned}* | Nicht zugewiesen: *${notAssigned}*\n\n`;
       } catch (locError) {
         console.error('Błąd dla lokalizacji', name + ':', locError);
-        text += '\n[Standort: ' + name + ']\nBłąd pobierania danych';
+        text += `🔴 *${name}*\n`;
+        text += '   _Fehler beim Abrufen der Daten_\n\n';
       }
     }
 
-    text += '\n\nAutomatische Nachricht. Der Vorarbeiter wurde über das Fehlen der Tour-Zuordnung informiert.';
+    text += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
+    text += '_Automatische Nachricht. Der Vorarbeiter wurde über das Fehlen der Tour-Zuordnung informiert._';
 
     await client.sendMessage(TOUR_GROUP_ID, text);
     telegram.sendMessage(msg.chat.id, '📤 Gruppenmeldung wurde gesendet.');
