@@ -150,7 +150,65 @@ telegram.onText(/\/lista/, (msg) => {
   telegram.sendMessage(msg.chat.id, out);
 });
 
-// Telegram - Podgląd nieprzypisanych tour
+// Telegram - Diagnostyka WhatsApp
+telegram.onText(/\/whatsapp_status/, async (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+
+  try {
+    const state = await client.getState();
+    const info = await client.getWWebVersion();
+    telegram.sendMessage(msg.chat.id, '📱 WhatsApp Status:\n' +
+      '• Stan: ' + state + '\n' +
+      '• Wersja: ' + info + '\n' +
+      '• Czas: ' + new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' }));
+  } catch (error) {
+    telegram.sendMessage(msg.chat.id, '❌ Nie można pobrać statusu WhatsApp: ' + error.message);
+  }
+});
+
+// Telegram - Lista grup WhatsApp
+telegram.onText(/\/grupy/, async (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+
+  try {
+    const chats = await client.getChats();
+    const groups = chats.filter(chat => chat.isGroup);
+
+    let groupList = '👥 Dostępne grupy WhatsApp:\n';
+    groups.forEach((group, index) => {
+      if (index < 10) { // Pokaż tylko pierwszych 10
+        groupList += '• ' + group.name + ' (ID: ' + group.id._serialized + ')\n';
+      }
+    });
+
+    if (groups.length === 0) {
+      groupList += 'Brak dostępnych grup.';
+    } else if (groups.length > 10) {
+      groupList += '\n... i ' + (groups.length - 10) + ' więcej grup.';
+    }
+
+    telegram.sendMessage(msg.chat.id, groupList);
+  } catch (error) {
+    telegram.sendMessage(msg.chat.id, '❌ Nie można pobrać listy grup: ' + error.message);
+  }
+});
+
+// Telegram - Test połączenia bazy danych
+telegram.onText(/\/test_db/, async (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+
+  try {
+    const [result] = await db.query('SELECT COUNT(*) as count FROM tours WHERE date = CURDATE()');
+    const [locations_count] = await db.query('SELECT COUNT(*) as count FROM locations');
+
+    telegram.sendMessage(msg.chat.id, '🗄️ Status bazy danych:\n' +
+      '• Połączenie: ✅ OK\n' +
+      '• Toury dzisiaj: ' + result[0].count + '\n' +
+      '• Lokalizacje: ' + locations_count[0].count);
+  } catch (error) {
+    telegram.sendMessage(msg.chat.id, '❌ Błąd bazy danych: ' + error.message);
+  }
+});
 telegram.onText(/\/podglad/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
 
@@ -213,11 +271,22 @@ telegram.onText(/\/test_grupa/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
 
   try {
+    // Sprawdź status połączenia WhatsApp
+    const clientState = await client.getState();
+    console.log('WhatsApp Client State:', clientState);
+
+    if (clientState !== 'CONNECTED') {
+      return telegram.sendMessage(msg.chat.id, '❌ WhatsApp nie jest połączony. Status: ' + clientState);
+    }
+
     const today = new Date().toISOString().split('T')[0];
     let text = '📋 Statusübersicht für ' + today + ':\n';
 
+    console.log('Pobieranie danych dla daty:', today);
+
     for (const name in locations) {
       const info = locations[name];
+      console.log('Przetwarzanie lokalizacji:', name, info);
 
       const queryNotDeparted = 'SELECT COUNT(*) AS count FROM tours t JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ? AND t.date = ? AND t.departure_status IS NULL';
       const [notDeparted] = await db.query(queryNotDeparted, [info.slug, today]);
@@ -225,16 +294,40 @@ telegram.onText(/\/test_grupa/, async (msg) => {
       const queryDeparted = 'SELECT COUNT(*) AS count FROM tours t JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ? AND t.date = ? AND t.departure_status IS NOT NULL';
       const [departed] = await db.query(queryDeparted, [info.slug, today]);
 
+      console.log('Dane dla', name + ':', 'Gestartet:', departed[0].count, 'Nicht gestartet:', notDeparted[0].count);
       text += '\n[Standort: ' + name + ']\nGestartet: ' + departed[0].count + ', Nicht gestartet: ' + notDeparted[0].count;
     }
 
     text += '\n\nAutomatische Nachricht. Der Vorarbeiter wurde über das Fehlen der Tour-Zuordnung informiert.';
 
-    await client.sendMessage('120363419266988965@g.us', text);
+    console.log('Wysyłanie wiadomości do grupy:', '120363419266988965@g.us');
+    console.log('Treść wiadomości:', text);
+
+    // Sprawdź czy grupa istnieje
+    const groupId = '120363419266988965@g.us';
+    const chat = await client.getChatById(groupId);
+    console.log('Informacje o grupie:', chat.name, chat.participants?.length, 'uczestników');
+
+    await client.sendMessage(groupId, text);
+    console.log('Wiadomość grupowa wysłana pomyślnie');
     telegram.sendMessage(msg.chat.id, '📤 Gruppenmeldung wurde gesendet.');
+
   } catch (error) {
-    console.error('Błąd w /test_grupa:', error);
-    telegram.sendMessage(msg.chat.id, '❌ Wystąpił błąd podczas wysyłania wiadomości grupowej.');
+    console.error('Szczegółowy błąd w /test_grupa:', error);
+    console.error('Stack trace:', error.stack);
+
+    let errorMsg = '❌ Błąd: ';
+    if (error.message.includes('group not found') || error.message.includes('chat not found')) {
+      errorMsg += 'Grupa WhatsApp nie została znaleziona. Sprawdź ID grupy.';
+    } else if (error.message.includes('not connected')) {
+      errorMsg += 'WhatsApp nie jest połączony.';
+    } else if (error.code && error.code.includes('ENOTFOUND')) {
+      errorMsg += 'Problem z połączeniem internetowym.';
+    } else {
+      errorMsg += error.message;
+    }
+
+    telegram.sendMessage(msg.chat.id, errorMsg);
   }
 });
 
