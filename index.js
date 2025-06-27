@@ -321,7 +321,7 @@ async function checkUnassignedToursAndNotifyManagers() {
             `Heute gibt es *${rows[0].count} Touren*,\n` +
             `die nicht gestartet sind.\n\n` +
             '📋 *Bitte Daten eintragen:*\n' +
-            `🔗 https://tour.ltslogistik.de/?location=${info.slug}\n\n` +
+            `🔗 https://tour.ltsog.de/?location=${info.slug}\n\n` +
             '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n' +
             '_Automatische Nachricht um 7:30 Uhr_\n\n' +
             '_Falls alles korrekt ist und der Grund bereits der Geschäftsleitung mitgeteilt wurde, bitte ignorieren._';
@@ -621,7 +621,7 @@ telegram.onText(/\/test_kierownik (.+)/, async (msg, match) => {
         '📋 *Bitte Daten eintragen:*\n' +
         `🔗 https://tour.ltslogistik.de/?location=${info.slug}\n\n` +
         '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n' +
-        '_TEST Nachricht_\n\n' +
+        '_Auto Nachricht_\n\n' +
         '_Falls alles korrekt ist und der Grund bereits der Geschäftsleitung mitgeteilt wurde, bitte ignorieren._';
 
       await client.sendMessage(info.phone + '@c.us', msgText);
