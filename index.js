@@ -441,7 +441,7 @@ telegram.onText(/\/test_kierownik (.+)/, async (msg, match) => {
       `Heute gibt es *${rows[0].count} Touren*,\n` +
       `die nicht gestartet sind.\n\n` +
       '📋 *Bitte Daten eintragen:*\n' +
-      `🔗 https://ltslog.de/?location=${info.slug}\n\n` +
+      `🔗 https://tour.ltslogistik.de/?location=${info.slug}\n\n` +
       '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n' +
       '_Automatische Nachricht_\n\n' +
       '_Falls alles korrekt ist und der Grund bereits der Geschäftsleitung mitgeteilt wurde, bitte ignorieren._';
