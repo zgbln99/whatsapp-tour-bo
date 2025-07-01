@@ -7,6 +7,14 @@ const TelegramBot = require('node-telegram-bot-api');
 const https = require('https');
 const fs = require('fs');
 
+// Funkcja pobierania dzisiejszej daty w strefie Berlin
+function getTodayBerlin() {
+  const berlinTime = new Date().toLocaleString('sv-SE', {
+    timeZone: 'Europe/Berlin'
+  }).split(' ')[0];
+  return berlinTime;
+}
+
 // Konfiguracja bazy danych
 const db = mysql.createPool({
   host: '92.113.22.6',
@@ -372,7 +380,7 @@ async function createManagerMessage(nazwa, info, today, isSecondReminder = false
 
 // Funkcja sprawdzania nieprzypisanych tour i powiadamiania kierowników (7:30 pon-pt)
 async function checkUnassignedToursAndNotifyManagers() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayBerlin();
 
   try {
     for (const nazwa in locations) {
@@ -426,7 +434,7 @@ async function checkUnassignedToursAndNotifyManagers() {
 
 // Drugie przypomnienie o 10:00
 async function checkUnassignedToursSecondReminder() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayBerlin();
 
   try {
     for (const nazwa in locations) {
@@ -481,7 +489,7 @@ async function checkUnassignedToursSecondReminder() {
 
 // Funkcja wysyłania dziennego podsumowania do grupy WhatsApp (10:30 pon-pt)
 async function sendDailySummaryToGroup() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayBerlin();
 
   try {
     let text = '📋 *TOUR STATUSÜBERSICHT*\n\n';
@@ -872,12 +880,6 @@ telegram.onText(/\/logi/, async (msg) => {
   telegram.sendMessage(msg.chat.id, '📁 Logs: /root/.pm2/logs/tourbot-out.log');
 });
 
-// Logi
-telegram.onText(/\/logi/, async (msg) => {
-  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-  telegram.sendMessage(msg.chat.id, '📁 Logs: /root/.pm2/logs/tourbot-out.log');
-});
-
 // Harmonogram automatycznych zadań
 telegram.onText(/\/harmonogram/, (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
@@ -902,9 +904,6 @@ telegram.onText(/\/harmonogram/, (msg) => {
   schedule += '   🚗 Raport przegladów technicznych\n\n';
   schedule += '🔸 *10:30* (Pon-Pt)\n';
   schedule += '   📊 Podsumowanie tour do grupy\n\n';
-  schedule += '🔸 *0:00* (Codziennie)\n';
-  schedule += '   🔄 Reset trackerów przypomnień\n\n';
-  schedule += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n';
   schedule += '_Strefa czasowa: Europe/Berlin_';
 
   telegram.sendMessage(msg.chat.id, schedule);
@@ -977,7 +976,7 @@ telegram.onText(/\/podglad/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
 
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayBerlin();
     let summary = '📋 *TOUR ÜBERSICHT*\n\n';
     summary += `📅 Datum: ${today}\n\n`;
 
@@ -1063,7 +1062,7 @@ telegram.onText(/\/test_kierownik (.+)/, async (msg, match) => {
   }
 
   const info = locations[nazwa];
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayBerlin();
 
   try {
     // Stwórz test wiadomość z oznaczeniem TEST
@@ -1117,7 +1116,7 @@ telegram.onText(/\/podglad_grupa/, async (msg) => {
 
   try {
     telegram.sendMessage(msg.chat.id, '📊 *Generuję podgląd wiadomości grupowej...*');
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayBerlin();
 
     let text = '📋 *TOUR STATUSÜBERSICHT*\n\n';
     text += `📅 *Datum:* ${today}\n`;
@@ -1228,7 +1227,7 @@ telegram.onText(/\/podglad_kierownik (.+)/, async (msg, match) => {
   }
 
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayBerlin();
     const info = locations[nazwa];
     const managerMessage = await createManagerMessage(nazwa, info, today, false, true);
 
@@ -1254,7 +1253,7 @@ telegram.onText(/\/podglad_kierownik2 (.+)/, async (msg, match) => {
   }
 
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayBerlin();
     const info = locations[nazwa];
     const managerMessage = await createManagerMessage(nazwa, info, today, true, true);
 
@@ -1275,7 +1274,7 @@ telegram.onText(/\/podglad_wszyscy_kierownicy/, async (msg) => {
 
   try {
     telegram.sendMessage(msg.chat.id, '👥 *Generuję podgląd dla wszystkich kierowników...*');
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayBerlin();
 
     let allPreviews = '👥 *PODGLĄD - WSZYSCY KIEROWNICY (PIERWSZE PRZYPOMNIENIE)*\n\n';
 
@@ -1307,7 +1306,7 @@ telegram.onText(/\/podglad_wszyscy_kierownicy2/, async (msg) => {
 
   try {
     telegram.sendMessage(msg.chat.id, '👥 *Generuję podgląd drugich przypomnień...*');
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayBerlin();
 
     let allPreviews = '👥 *PODGLĄD - WSZYSCY KIEROWNICY (DRUGIE PRZYPOMNIENIE)*\n\n';
 
@@ -1600,8 +1599,6 @@ console.log('   • 7:30 (Pon-Pt) - Pierwsze powiadomienia (tylko jeśli brak da
 console.log('   • 10:00 (Pon-Pt) - Drugie przypomnienia (tylko jeśli nadal brak danych)');
 console.log('   • 10:00 (Poniedziałek) - Raport przegladów');
 console.log('   • 10:30 (Pon-Pt) - Inteligentne podsumowanie tour do grupy');
-console.log('   • 0:00 (Codziennie) - Reset trackerów');
-console.log('📊 Funkcje statystyk dostępne przez Telegram!');
 console.log('🧠 INTELIGENTNA LOGIKA: Jeśli kierownik już wprowadził dane - bez przypomnień!');
 console.log('🔢 Rozróżnienie: "nie wyjechało" vs "nie wprowadzono danych"');
 console.log('🤖 WSZYSTKIE wiadomości oznaczone jako automatyczne!');
