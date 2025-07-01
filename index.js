@@ -1,3 +1,146 @@
+// index.js - WhatsApp Universal Bot – Toury + Przeglądy techniczne + Statystyki
+const qrcode = require('qrcode-terminal');
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const mysql = require('mysql2/promise');
+const cron = require('node-cron');
+const TelegramBot = require('node-telegram-bot-api');
+const https = require('https');
+const fs = require('fs');
+
+// Konfiguracja bazy danych
+const db = mysql.createPool({
+  host: '92.113.22.6',
+  user: 'u918515209_tour',
+  password: 'Marek2211.!',
+  database: 'u918515209_tour'
+});
+
+// Lokalizacje dla tour
+let locations;
+try {
+  locations = require('./locations.js');
+} catch (err) {
+  console.error('❌ Nie udało się załadować locations.js, używam domyślnych lokalizacji');
+  locations = {
+    Stavenhagen: { slug: 'stavenhagen', phone: '491737008662' },
+    Hof: { slug: 'hof', phone: '4915120200738' },
+    Radeburg: { slug: 'radeburg', phone: '48668056220' }
+  };
+}
+
+// Konfiguracja przegladów
+const FLEET_INSPECTION_URL = 'https://fleet.ltslogistik.de/inspection.php';
+const TOUR_GROUP_ID = '120363419266988965@g.us'; // Grupa dla tour
+const FLEET_GROUP_ID = '120363418541056299@g.us'; // Grupa dla przegladów
+
+// Tracking pierwszych przypomnień (resetowany codziennie)
+let dailyFirstReminders = new Set();
+
+// Funkcja zapisywania lokalizacji do pliku
+function saveLocationsToFile() {
+  const content = 'let locations = ' + JSON.stringify(locations, null, 2) + ';\nmodule.exports = locations;';
+  fs.writeFileSync('./locations.js', content, 'utf8');
+}
+
+// Konfiguracja Telegram
+const TELEGRAM_BOT_TOKEN = '7688074026:AAFz9aK-WAUYeFnB-yISbSIFZe1_DlVr1dI';
+const TELEGRAM_CHAT_ID = '7531268785';
+const telegram = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+
+// Inicjalizacja klienta WhatsApp
+const client = new Client({
+  authStrategy: new LocalAuth(),
+  puppeteer: {
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  }
+});
+
+// Event listener dla QR code
+client.on('qr', (qr) => {
+  console.log('QR Code otrzymany, skanuj go w aplikacji WhatsApp!');
+  qrcode.generate(qr, { small: true });
+});
+
+// Event listener dla gotowości klienta
+client.on('ready', () => {
+  console.log('Universal Bot - WhatsApp jest gotowy!');
+  telegram.sendMessage(TELEGRAM_CHAT_ID, '✅ Universal Bot (Toury + Technische Prüfungen + Statystyki) został uruchomiony!')
+    .catch(console.error);
+});
+
+// Event listener dla rozłączenia
+client.on('disconnected', (reason) => {
+  console.log('Universal Bot - WhatsApp został rozłączony:', reason);
+  telegram.sendMessage(TELEGRAM_CHAT_ID, '❌ Universal Bot został rozłączony: ' + reason)
+    .catch(console.error);
+});
+
+// Uruchomienie klienta WhatsApp
+client.initialize();
+
+// ==================== FUNKCJE PRZEGLADÓW ====================
+
+// Funkcja pobierania danych o przegladach z inspection.php
+async function fetchInspectionData() {
+  return new Promise((resolve, reject) => {
+    console.log('Pobieranie danych przegladów z:', FLEET_INSPECTION_URL);
+
+    const options = {
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    };
+
+    https.get(FLEET_INSPECTION_URL, options, (res) => {
+      let data = '';
+
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+
+      res.on('end', () => {
+        try {
+          const jsonData = JSON.parse(data);
+          console.log('Otrzymano dane przegladów:', jsonData);
+
+          if (jsonData.status !== 'ok') {
+            reject(new Error('Błędny status odpowiedzi: ' + (jsonData.error || 'nieznany')));
+            return;
+          }
+
+          resolve(jsonData.entries || []);
+        } catch (error) {
+          reject(new Error('Błąd parsowania JSON: ' + error.message));
+        }
+      });
+    }).on('error', (error) => {
+      reject(new Error('Błąd HTTP: ' + error.message));
+    });
+  });
+}
+
+// Funkcja pobierania WSZYSTKICH danych przegladów (w tym przeterminowanych)
+async function fetchAllInspectionData() {
+  try {
+    const inspectionData = await fetchInspectionData();
+
+    return inspectionData.map(inspection => ({
+      license_plate: inspection.license_plate,
+      typ: inspection.typ,
+      faellig_am: inspection.faellig_am,
+      daysDiff: inspection.days_diff || 0,
+      isExpired: inspection.status === 'expired',
+      isExpiringSoon: inspection.status === 'expiring'
+    }));
+
+  } catch (error) {
+    console.error('Błąd pobierania wszystkich danych przegladów:', error.message);
+    throw error;
+  }
+}
+
 // Funkcja tworzenia wiadomości o przegladach
 function createInspectionMessage(inspections) {
   const today = new Date().toLocaleDateString('de-DE');
@@ -17,14 +160,13 @@ function createInspectionMessage(inspections) {
   Object.keys(vehicleGroups).forEach(plate => {
     const vehicleInspections = vehicleGroups[plate];
 
-    // Sortuj przeglądy pojazdu według pilności (przeterminowane najpierw, potem najbliższe)
+    // Sortuj przeglądy pojazdu według pilności
     vehicleInspections.sort((a, b) => {
       if (a.isExpired && !b.isExpired) return -1;
       if (!a.isExpired && b.isExpired) return 1;
       return a.daysDiff - b.daysDiff;
     });
 
-    // Znajdź najkrytyczniejszy przegląd (do sortowania całej listy)
     const mostCritical = vehicleInspections[0];
 
     // Przygotuj opisy dla każdego typu przeglądu
@@ -36,12 +178,8 @@ function createInspectionMessage(inspections) {
       }
     });
 
-    // Przygotuj listę typów
-    const types = vehicleInspections.map(insp => insp.typ).join(', ');
-
     groupedInspections.push({
       license_plate: plate,
-      types: types,
       descriptions: descriptions,
       mostCritical: mostCritical,
       hasExpired: vehicleInspections.some(insp => insp.isExpired),
@@ -112,472 +250,6 @@ function createInspectionMessage(inspections) {
   return message;
 }
 
-// Funkcja tworzenia wiadomości dla kierownika (format z podglądem)
-async function createManagerMessage(nazwa, info, today, isSecondReminder = false, isPreview = false) {
-  try {
-    const query = 'SELECT COUNT(*) as count FROM tours t JOIN locations l ON t.location_id = l.id LEFT JOIN assignments a ON t.tour_number = a.tour_number AND t.location_id = a.location_id AND a.assignment_date = ? WHERE a.id IS NULL AND l.unique_slug = ?';
-    const [rows] = await db.query(query, [today, info.slug]);
-
-    const unassignedCount = rows[0].count;
-    if (unassignedCount === 0 && !isPreview) return null;
-
-    const time = new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' });
-
-    let header, urgencyLevel, timeNote, callToAction;
-
-    if (isSecondReminder) {
-      header = '🚨 *DRINGENDE TOUR ERINNERUNG* 🚨';
-      urgencyLevel = '🔥 *WICHTIG - ZWEITE ERINNERUNG!*';
-      timeNote = '_Zweite Erinnerung um 10:00 Uhr_\n_Gruppenbericht folgt um 10:30 Uhr_';
-      callToAction = '⚡ *Bitte sofort Daten eintragen:*';
-    } else {
-      header = '⚠️ *TOUR ERINNERUNG* ⚠️';
-      urgencyLevel = '📋 *Hinweis:*';
-      timeNote = '_Erste Erinnerung um 7:30 Uhr_\n_Weitere Erinnerung um 10:00 Uhr falls nötig_';
-      callToAction = '📝 *Bitte Daten eintragen:*';
-    }
-
-    const msgText = `${header}\n\n` +
-      `🏢 *Standort:* ${nazwa}\n` +
-      `📅 *Datum:* ${today}\n` +
-      `⏰ *Zeit:* ${time}\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `${urgencyLevel}\n` +
-      `Heute gibt es *${unassignedCount || '[X]'} Touren*,\n` +
-      `die nicht zugewiesen sind.\n\n` +
-      `${callToAction}\n` +
-      `🔗 https://tour.ltsog.de/?location=${info.slug}\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-      `${timeNote}\n\n` +
-      `_Falls alles korrekt ist und der Grund bereits_\n` +
-      `_der Geschäftsleitung mitgeteilt wurde,_\n` +
-      `_bitte diese Nachricht ignorieren._`;
-
-    return msgText;
-  } catch (error) {
-    console.error(`Błąd tworzenia wiadomości dla ${nazwa}:`, error);
-    return null;
-  }
-}
-
-// Funkcja tworzenia fancy wiadomości grupowej
-async function createFancyGroupMessage(today) {
-  try {
-    const stats = await getFancyGroupStats(today);
-    const currentTime = new Date().toLocaleString('de-DE', {
-      timeZone: 'Europe/Berlin',
-      weekday: 'long',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-
-    let text = '📊 *TOUR INTELLIGENCE DASHBOARD* 📊\n\n';
-    text += `📅 *${currentTime}*\n`;
-    text += `🎯 *KPI Übersicht & Analytics*\n`;
-    text += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
-
-    // Globalne KPI
-    const globalTrend = stats.trends.todayTotal < stats.trends.yesterdayTotal ? '📈 VERBESSERT' :
-                       stats.trends.todayTotal > stats.trends.yesterdayTotal ? '📉 VERSCHLECHTERT' :
-                       '➡️ STABIL';
-
-    text += '🎯 *MANAGEMENT KPI*\n';
-    text += `   Trend heute: *${globalTrend}*\n`;
-    text += `   Probleme heute: *${stats.trends.todayTotal}*\n`;
-    text += `   Probleme gestern: *${stats.trends.yesterdayTotal}*\n`;
-    if (stats.trends.bestStreak.days > 0) {
-      text += `   🏆 Bester Streak: *${stats.trends.bestStreak.location}* (${stats.trends.bestStreak.days} Tage)\n`;
-    }
-    text += '\n';
-
-    let totalIssues = 0;
-    let secondRemindersCount = 0;
-
-    // Szczegóły dla każdej lokalizacji
-    text += '📍 *STANDORT PERFORMANCE*\n';
-    for (const name in locations) {
-      const info = locations[name];
-
-      try {
-        const queryAllTours = 'SELECT COUNT(*) AS count FROM tours t JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ?';
-        const [allTours] = await db.query(queryAllTours, [info.slug]);
-
-        const queryAssigned = 'SELECT COUNT(*) AS count FROM assignments a JOIN tours t ON a.tour_number = t.tour_number JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ? AND a.assignment_date = ?';
-        const [assignedTours] = await db.query(queryAssigned, [info.slug, today]);
-
-        // Pobierz numery nieprzypisanych tour
-        const queryUnassignedTours = `
-          SELECT t.tour_number
-          FROM tours t
-          JOIN locations l ON t.location_id = l.id
-          LEFT JOIN assignments a ON t.tour_number = a.tour_number
-            AND t.location_id = a.location_id
-            AND a.assignment_date = ?
-          WHERE a.id IS NULL AND l.unique_slug = ?
-          ORDER BY t.tour_number
-        `;
-        const [unassignedTours] = await db.query(queryUnassignedTours, [today, info.slug]);
-
-        const total = allTours[0].count;
-        const assigned = assignedTours[0].count;
-        const notAssigned = total - assigned;
-
-        if (notAssigned > 0) {
-          totalIssues += notAssigned;
-          if (dailyFirstReminders.has(name)) {
-            secondRemindersCount++;
-          }
-        }
-
-        const completionRate = total > 0 ? Math.round((assigned / total) * 100) : 100;
-        const progressBar = createProgressBar(assigned, total, 8);
-
-        let statusIcon = '🟢';
-        let priorityFlag = '';
-
-        if (notAssigned > 0) {
-          statusIcon = notAssigned >= 3 ? '🔴' : '🟡';
-          if (dailyFirstReminders.has(name)) {
-            priorityFlag = ' ⚠️ *2x REMINDER*';
-          }
-          if (notAssigned >= 3) {
-            priorityFlag += ' 🚨 *HIGH RISK*';
-          }
-        }
-
-        text += `${statusIcon} *${name}*${priorityFlag}\n`;
-        text += `   Performance: *${completionRate}%* ${progressBar}\n`;
-        text += `   Zugewiesen: *${assigned}/${total}*\n`;
-
-        if (notAssigned > 0) {
-          const tourNumbers = unassignedTours.map(tour => tour.tour_number).join(', ');
-          text += `   ❌ Nicht zugewiesen: *${notAssigned}*\n`;
-          text += `   📋 Touren: _${tourNumbers}_\n`;
-
-          if (stats.locations[name]) {
-            const locationStats = stats.locations[name];
-            text += `   📊 Trend: ${locationStats.trendIcon} (gestern: ${locationStats.yesterdayIssues})\n`;
-            if (locationStats.streak > 0) {
-              text += `   🔥 Perfect Streak: ${locationStats.streak} Tage\n`;
-            }
-          }
-        }
-        text += '\n';
-
-      } catch (locError) {
-        console.error('Błąd dla lokalizacji', name + ':', locError);
-        text += `🔴 *${name}*\n`;
-        text += '   ❌ _Fehler beim Abrufen_\n\n';
-      }
-    }
-
-    // Sekcja alertów i predykcji
-    if (stats.alerts.length > 0 || stats.predictions.length > 0) {
-      text += '🚨 *MANAGEMENT ALERTS*\n';
-
-      if (secondRemindersCount > 0) {
-        text += `⚠️ *${secondRemindersCount} Standorte* benötigten 2 Erinnerungen!\n`;
-      }
-
-      if (totalIssues >= 5) {
-        text += `🔴 *Kritisch:* ${totalIssues} unzugewiesene Touren heute\n`;
-      }
-
-      if (stats.trends.worstLocation.issues >= 3) {
-        text += `📉 *Fokus needed:* ${stats.trends.worstLocation.name} (${stats.trends.worstLocation.issues} Probleme)\n`;
-      }
-
-      stats.alerts.forEach(alert => {
-        text += `🚨 ${alert}\n`;
-      });
-
-      text += '\n';
-    }
-
-    // Podsumowanie i call to action
-    text += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n';
-
-    if (totalIssues === 0) {
-      text += '✅ *PERFEKTE PERFORMANCE!*\n';
-      text += '🎉 Alle Touren zugewiesen - Gratulation!\n\n';
-    } else {
-      text += `📊 *ZUSAMMENFASSUNG:* ${totalIssues} Action Items\n`;
-      if (secondRemindersCount > 0) {
-        text += `⚠️ *PRIORITY:* ${secondRemindersCount} Standorte brauchen sofortige Aufmerksamkeit\n`;
-      }
-      text += '\n';
-    }
-
-    text += '🕒 _Automatischer AI-gestützter Bericht um 10:30 Uhr_\n';
-    text += '👨‍💼 _Manager wurden entsprechend informiert_\n';
-    text += '📈 _Next Report: Morgen 10:30 Uhr_';
-
-    return text;
-
-  } catch (error) {
-    console.error('Błąd tworzenia fancy group message:', error);
-    return null;
-  }
-}// index.js - WhatsApp Universal Bot – Toury + Przeglądy techniczne + Statystyki
-const qrcode = require('qrcode-terminal');
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const mysql = require('mysql2/promise');
-const cron = require('node-cron');
-const TelegramBot = require('node-telegram-bot-api');
-const https = require('https');
-const fs = require('fs');
-
-// Konfiguracja bazy danych
-const db = mysql.createPool({
-  host: '92.113.22.6',
-  user: 'u918515209_tour',
-  password: 'Marek2211.!',
-  database: 'u918515209_tour'
-});
-
-// Lokalizacje dla tour
-let locations;
-try {
-  locations = require('./locations.js');
-} catch (err) {
-  console.error('❌ Nie udało się załadować locations.js, używam domyślnych lokalizacji');
-  locations = {
-    Stavenhagen: { slug: 'stavenhagen', phone: '491737008662' },
-    Hof: { slug: 'hof', phone: '4915120200738' },
-    Radeburg: { slug: 'radeburg', phone: '48668056220' }
-  };
-}
-
-// Konfiguracja przegladów
-const FLEET_INSPECTION_URL = 'https://fleet.ltslogistik.de/inspection.php';
-const TOUR_GROUP_ID = '120363419266988965@g.us'; // Grupa dla tour
-const FLEET_GROUP_ID = '120363418541056299@g.us'; // Grupa dla przegladów
-
-// Tracking pierwszych przypomnień (resetowany codziennie)
-let dailyFirstReminders = new Set();
-
-// Funkcja zapisywania lokalizacji do pliku
-function saveLocationsToFile() {
-  const content = 'let locations = ' + JSON.stringify(locations, null, 2) + ';\nmodule.exports = locations;';
-  fs.writeFileSync('./locations.js', content, 'utf8');
-}
-
-// Konfiguracja Telegram
-const TELEGRAM_BOT_TOKEN = '7688074026:AAFz9aK-WAUYeFnB-yISbSIFZe1_DlVr1dI';
-const TELEGRAM_CHAT_ID = '7531268785';
-const telegram = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
-
-// Inicjalizacja klienta WhatsApp
-const client = new Client({
-  authStrategy: new LocalAuth(),
-  puppeteer: {
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  }
-});
-
-// Event listener dla QR code
-client.on('qr', (qr) => {
-  console.log('QR Code otrzymany, skanuj go w aplikacji WhatsApp!');
-  qrcode.generate(qr, { small: true });
-});
-
-// Event listener dla gotowości klienta
-client.on('ready', () => {
-  console.log('Universal Bot - WhatsApp jest gotowy!');
-  telegram.sendMessage(TELEGRAM_CHAT_ID, '✅ Universal Bot (Toury + Technische Prüfungen + Statistiken) został uruchomiony!')
-    .catch(console.error);
-});
-
-// Event listener dla rozłączenia
-client.on('disconnected', (reason) => {
-  console.log('Universal Bot - WhatsApp został rozłączony:', reason);
-  telegram.sendMessage(TELEGRAM_CHAT_ID, '❌ Universal Bot został rozłączony: ' + reason)
-    .catch(console.error);
-});
-
-// Uruchomienie klienta WhatsApp
-client.initialize();
-
-// ==================== FUNKCJE PRZEGLADÓW ====================
-
-// Funkcja pobierania danych o przegladach z inspection.php
-async function fetchInspectionData() {
-  return new Promise((resolve, reject) => {
-    console.log('Pobieranie danych przegladów z:', FLEET_INSPECTION_URL);
-
-    const options = {
-      timeout: 15000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    };
-
-    https.get(FLEET_INSPECTION_URL, options, (res) => {
-      let data = '';
-
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-
-      res.on('end', () => {
-        try {
-          const jsonData = JSON.parse(data);
-          console.log('Otrzymano dane przegladów:', jsonData);
-
-          if (jsonData.status !== 'ok') {
-            reject(new Error('Błędny status odpowiedzi: ' + (jsonData.error || 'nieznany')));
-            return;
-          }
-
-          resolve(jsonData.entries || []);
-        } catch (error) {
-          reject(new Error('Błąd parsowania JSON: ' + error.message));
-        }
-      });
-    }).on('error', (error) => {
-      reject(new Error('Błąd HTTP: ' + error.message));
-    });
-  });
-}
-
-// Funkcja pobierania WSZYSTKICH danych przegladów (w tym przeterminowanych)
-async function fetchAllInspectionData() {
-  try {
-    // Używamy inspection.php, który teraz zwraca też przeterminowane
-    const inspectionData = await fetchInspectionData();
-
-    return inspectionData.map(inspection => ({
-      license_plate: inspection.license_plate,
-      typ: inspection.typ,
-      faellig_am: inspection.faellig_am,
-      daysDiff: inspection.days_diff || 0,
-      isExpired: inspection.status === 'expired',
-      isExpiringSoon: inspection.status === 'expiring'
-    }));
-
-  } catch (error) {
-    console.error('Błąd pobierania wszystkich danych przegladów:', error.message);
-    throw error;
-  }
-}
-
-// Funkcja tworzenia wiadomości o przegladach
-function createInspectionMessage(inspections) {
-  const today = new Date().toLocaleDateString('de-DE');
-
-  // Grupuj przeglądy według pojazdu
-  const vehicleGroups = {};
-  inspections.forEach(inspection => {
-    const plate = inspection.license_plate;
-    if (!vehicleGroups[plate]) {
-      vehicleGroups[plate] = [];
-    }
-    vehicleGroups[plate].push(inspection);
-  });
-
-  // Przetwórz grupy na pojedyncze wpisy
-  const groupedInspections = [];
-  Object.keys(vehicleGroups).forEach(plate => {
-    const vehicleInspections = vehicleGroups[plate];
-
-    // Sortuj przeglądy pojazdu według pilności (przeterminowane najpierw, potem najbliższe)
-    vehicleInspections.sort((a, b) => {
-      if (a.isExpired && !b.isExpired) return -1;
-      if (!a.isExpired && b.isExpired) return 1;
-      return a.daysDiff - b.daysDiff;
-    });
-
-    // Znajdź najkrytyczniejszy przegląd (do sortowania całej listy)
-    const mostCritical = vehicleInspections[0];
-
-    // Przygotuj opisy dla każdego typu przeglądu
-    const descriptions = vehicleInspections.map(insp => {
-      if (insp.isExpired) {
-        return `${insp.typ}: *${Math.abs(insp.daysDiff)} Tage überfällig*`;
-      } else {
-        return `${insp.typ}: *noch ${insp.daysDiff} Tage*`;
-      }
-    });
-
-    // Przygotuj listę typów
-    const types = vehicleInspections.map(insp => insp.typ).join(', ');
-
-    groupedInspections.push({
-      license_plate: plate,
-      types: types,
-      descriptions: descriptions,
-      mostCritical: mostCritical,
-      hasExpired: vehicleInspections.some(insp => insp.isExpired),
-      hasExpiring14: vehicleInspections.some(insp => !insp.isExpired && insp.daysDiff < 15),
-      hasExpiring30: vehicleInspections.some(insp => !insp.isExpired && insp.daysDiff >= 15 && insp.daysDiff <= 30)
-    });
-  });
-
-  // Sortuj pojazdy według najkrytyczniejszego przeglądu
-  groupedInspections.sort((a, b) => {
-    if (a.mostCritical.isExpired && !b.mostCritical.isExpired) return -1;
-    if (!a.mostCritical.isExpired && b.mostCritical.isExpired) return 1;
-    return a.mostCritical.daysDiff - b.mostCritical.daysDiff;
-  });
-
-  // Podziel na kategorie
-  const expired = groupedInspections.filter(v => v.hasExpired);
-  const expiring14 = groupedInspections.filter(v => !v.hasExpired && v.hasExpiring14);
-  const expiring30 = groupedInspections.filter(v => !v.hasExpired && !v.hasExpiring14 && v.hasExpiring30);
-
-  let message = '🚗 *TECHNISCHE PRÜFUNGEN*\n';
-  message += '📊 _Wochenbericht_\n\n';
-  message += `📅 *Datum:* ${today}\n`;
-  message += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n\n';
-
-  if (expired.length > 0) {
-    message += `🚨 *ÜBERFÄLLIG* (${expired.length})\n`;
-    expired.forEach(vehicle => {
-      message += `🔴 *${vehicle.license_plate}*\n`;
-      vehicle.descriptions.forEach(desc => {
-        message += `   ${desc}\n`;
-      });
-      message += '\n';
-    });
-  }
-
-  if (expiring14.length > 0) {
-    message += `🔥 *DRINGEND - BIS 14 TAGE* (${expiring14.length})\n`;
-    expiring14.forEach(vehicle => {
-      message += `🟠 *${vehicle.license_plate}*\n`;
-      vehicle.descriptions.forEach(desc => {
-        message += `   ${desc}\n`;
-      });
-      message += '\n';
-    });
-  }
-
-  if (expiring30.length > 0) {
-    message += `⚠️ *BIS 30 TAGE* (${expiring30.length})\n`;
-    expiring30.forEach(vehicle => {
-      message += `🟡 *${vehicle.license_plate}*\n`;
-      vehicle.descriptions.forEach(desc => {
-        message += `   ${desc}\n`;
-      });
-      message += '\n';
-    });
-  }
-
-  if (expired.length === 0 && expiring30.length === 0 && expiring14.length === 0) {
-    message += '✅ *Alle Prüfungen sind aktuell!*\n\n';
-  }
-
-  message += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n';
-  message += '🔗 Panel: https://fleet.ltslogistik.de/\n\n';
-  message += '_Automatische Nachricht_\n_Jeden Montag um 10:00 Uhr_';
-
-  return message;
-}
-
 // Główna funkcja sprawdzania i wysyłania raportów przegladów
 async function checkAndSendInspectionReport() {
   try {
@@ -600,7 +272,7 @@ async function checkAndSendInspectionReport() {
     // Wyślij na WhatsApp grupę
     await client.sendMessage(FLEET_GROUP_ID, message);
 
-    // Policz pojazdy zamiast pojedynczych przegladów
+    // Policz pojazdy
     const vehicleGroups = {};
     inspections.forEach(inspection => {
       const plate = inspection.license_plate;
@@ -631,6 +303,73 @@ async function checkAndSendInspectionReport() {
 
 // ==================== FUNKCJE AUTOMATYCZNE TOUR ====================
 
+// Funkcja tworzenia wiadomości dla kierownika
+async function createManagerMessage(nazwa, info, today, isSecondReminder = false, isPreview = false) {
+  try {
+    // Sprawdź czy kierownik już wprowadził jakiekolwiek dane
+    const queryAnyAssignments = `
+      SELECT COUNT(*) as assignments_count
+      FROM assignments a
+      JOIN tours t ON a.tour_number = t.tour_number
+      JOIN locations l ON t.location_id = l.id
+      WHERE l.unique_slug = ? AND a.assignment_date = ?
+    `;
+    const [assignmentCheck] = await db.query(queryAnyAssignments, [info.slug, today]);
+
+    // Jeśli kierownik już wprowadził dane i to nie jest podgląd - nie twórz wiadomości
+    if (assignmentCheck[0].assignments_count > 0 && !isPreview) {
+      return null; // Kierownik już działał - nie wysyłaj wiadomości
+    }
+
+    // Sprawdź ile tour jest nieprzypisanych (dla wyświetlenia w wiadomości)
+    const queryUnassigned = 'SELECT COUNT(*) as count FROM tours t JOIN locations l ON t.location_id = l.id LEFT JOIN assignments a ON t.tour_number = a.tour_number AND t.location_id = a.location_id AND a.assignment_date = ? WHERE a.id IS NULL AND l.unique_slug = ?';
+    const [unassignedResult] = await db.query(queryUnassigned, [today, info.slug]);
+    const unassignedCount = unassignedResult[0].count;
+
+    // Jeśli to podgląd i są assignments, pokaż info
+    if (isPreview && assignmentCheck[0].assignments_count > 0) {
+      return `ℹ️ *INFORMACJA*\n\nKierownik już wprowadził dane (${assignmentCheck[0].assignments_count} przypisań).\nNie zostałaby wysłana wiadomość.\n\n_W systemie pozostają ${unassignedCount} nieprzypisanych tour - to te które nie wyjechały._`;
+    }
+
+    const time = new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' });
+
+    let header, urgencyLevel, timeNote, callToAction;
+
+    if (isSecondReminder) {
+      header = '🚨 *DRINGENDE TOUR ERINNERUNG* 🚨';
+      urgencyLevel = '🔥 *WICHTIG - ZWEITE ERINNERUNG!*';
+      timeNote = '_Zweite automatische Erinnerung um 10:00 Uhr_\n_Gruppenbericht folgt um 10:30 Uhr_';
+      callToAction = '⚡ *Bitte sofort Daten eintragen:*';
+    } else {
+      header = '⚠️ *TOUR ERINNERUNG* ⚠️';
+      urgencyLevel = '📋 *Hinweis:*';
+      timeNote = '_Erste automatische Erinnerung um 7:30 Uhr_\n_Weitere Erinnerung um 10:00 Uhr falls nötig_';
+      callToAction = '📝 *Bitte Daten eintragen:*';
+    }
+
+    const msgText = `${header}\n\n` +
+      `🏢 *Standort:* ${nazwa}\n` +
+      `📅 *Datum:* ${today}\n` +
+      `⏰ *Zeit:* ${time}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `${urgencyLevel}\n` +
+      `Heute wurden noch keine Daten\n` +
+      `für die Touren eingegeben.\n\n` +
+      `${callToAction}\n` +
+      `🔗 https://tour.ltsog.de/?location=${info.slug}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `${timeNote}\n\n` +
+      `_Bitte alle ausgefahrenen Touren markieren._\n` +
+      `_Nicht markierte Touren gelten als nicht ausgefahren._\n\n` +
+      `🤖 _Dies ist eine automatische Nachricht_`;
+
+    return msgText;
+  } catch (error) {
+    console.error(`Błąd tworzenia wiadomości dla ${nazwa}:`, error);
+    return null;
+  }
+}
+
 // Funkcja sprawdzania nieprzypisanych tour i powiadamiania kierowników (7:30 pon-pt)
 async function checkUnassignedToursAndNotifyManagers() {
   const today = new Date().toISOString().split('T')[0];
@@ -640,7 +379,7 @@ async function checkUnassignedToursAndNotifyManagers() {
       const info = locations[nazwa];
 
       try {
-        // NOWA LOGIKA: Sprawdź czy kierownik już wprowadził jakiekolwiek dane
+        // Sprawdź czy kierownik już wprowadził jakiekolwiek dane
         const queryAnyAssignments = `
           SELECT COUNT(*) as assignments_count
           FROM assignments a
@@ -685,7 +424,7 @@ async function checkUnassignedToursAndNotifyManagers() {
   }
 }
 
-// NOWA FUNKCJA: Drugie przypomnienie o 10:00
+// Drugie przypomnienie o 10:00
 async function checkUnassignedToursSecondReminder() {
   const today = new Date().toISOString().split('T')[0];
 
@@ -694,7 +433,7 @@ async function checkUnassignedToursSecondReminder() {
       const info = locations[nazwa];
 
       try {
-        // NOWA LOGIKA: Sprawdź czy kierownik już wprowadził jakiekolwiek dane
+        // Sprawdź czy kierownik już wprowadził jakiekolwiek dane
         const queryAnyAssignments = `
           SELECT COUNT(*) as assignments_count
           FROM assignments a
@@ -740,105 +479,126 @@ async function checkUnassignedToursSecondReminder() {
   }
 }
 
-// Funkcja tworzenia progress bara
-function createProgressBar(assigned, total, width = 10) {
-  if (total === 0) return '░'.repeat(width);
-  const filled = Math.round((assigned / total) * width);
-  const empty = width - filled;
-  return '█'.repeat(filled) + '░'.repeat(empty);
-}
-
-// Funkcja pobierania statystyk tygodniowych dla fancy raportu
-async function getWeeklyPerformanceStats() {
-  const today = new Date();
-  const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const weekAgoStr = weekAgo.toISOString().split('T')[0];
-  const todayStr = today.toISOString().split('T')[0];
-
-  const stats = {};
-
-  for (const name in locations) {
-    const info = locations[name];
-
-    try {
-      // Pobierz dni z kompletnymi przypisaniami w ostatnim tygodniu
-      const queryCompleteWeek = `
-        SELECT COUNT(*) as complete_days
-        FROM (
-          SELECT a.assignment_date,
-                 COUNT(DISTINCT a.tour_number) as assigned_tours,
-                 (SELECT COUNT(*) FROM tours t2 JOIN locations l2 ON t2.location_id = l2.id WHERE l2.unique_slug = ?) as total_tours
-          FROM assignments a
-          JOIN tours t ON a.tour_number = t.tour_number
-          JOIN locations l ON t.location_id = l.id
-          WHERE l.unique_slug = ? AND a.assignment_date BETWEEN ? AND ?
-          GROUP BY a.assignment_date
-          HAVING assigned_tours = total_tours
-        ) as complete_day_stats
-      `;
-
-      const [weekResult] = await db.query(queryCompleteWeek, [info.slug, info.slug, weekAgoStr, todayStr]);
-      const completeDays = weekResult[0].complete_days || 0;
-      const workDays = 7; // Zakładamy 7 dni roboczych dla uproszczenia
-      const successRate = Math.round((completeDays / workDays) * 100);
-
-      stats[name] = {
-        completeDays,
-        workDays
-
 // Funkcja wysyłania dziennego podsumowania do grupy WhatsApp (10:30 pon-pt)
 async function sendDailySummaryToGroup() {
   const today = new Date().toISOString().split('T')[0];
 
   try {
-    const fancyMessage = await createFancyGroupMessage(today);
+    let text = '📋 *TOUR STATUSÜBERSICHT*\n\n';
+    text += `📅 *Datum:* ${today}\n`;
+    text += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n\n';
 
-    if (!fancyMessage) {
-      throw new Error('Nie udało się utworzyć fancy wiadomości grupowej');
+    let needsReminderCount = 0;
+    let secondRemindersCount = 0;
+
+    for (const name in locations) {
+      const info = locations[name];
+
+      try {
+        // Sprawdź czy kierownik wprowadził jakiekolwiek dane
+        const queryAnyAssignments = `
+          SELECT COUNT(*) as assignments_count
+          FROM assignments a
+          JOIN tours t ON a.tour_number = t.tour_number
+          JOIN locations l ON t.location_id = l.id
+          WHERE l.unique_slug = ? AND a.assignment_date = ?
+        `;
+        const [assignmentCheck] = await db.query(queryAnyAssignments, [info.slug, today]);
+
+        const queryAllTours = 'SELECT COUNT(*) AS count FROM tours t JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ?';
+        const [allTours] = await db.query(queryAllTours, [info.slug]);
+
+        const queryAssigned = 'SELECT COUNT(*) AS count FROM assignments a JOIN tours t ON a.tour_number = t.tour_number JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ? AND a.assignment_date = ?';
+        const [assignedTours] = await db.query(queryAssigned, [info.slug, today]);
+
+        // Pobierz numery nieprzypisanych tour
+        const queryUnassignedTours = `
+          SELECT t.tour_number
+          FROM tours t
+          JOIN locations l ON t.location_id = l.id
+          LEFT JOIN assignments a ON t.tour_number = a.tour_number
+            AND t.location_id = a.location_id
+            AND a.assignment_date = ?
+          WHERE a.id IS NULL AND l.unique_slug = ?
+          ORDER BY t.tour_number
+        `;
+        const [unassignedTours] = await db.query(queryUnassignedTours, [today, info.slug]);
+
+        const total = allTours[0].count;
+        const assigned = assignedTours[0].count;
+        const notAssigned = total - assigned;
+        const hasAssignments = assignmentCheck[0].assignments_count > 0;
+
+        if (!hasAssignments) {
+          // Kierownik nie wprowadził żadnych danych - potrzebuje przypomnienia
+          needsReminderCount++;
+          if (dailyFirstReminders.has(name)) {
+            secondRemindersCount++;
+          }
+
+          const reminderNote = dailyFirstReminders.has(name) ? ' ⚠️' : '';
+          text += `🔴 *${name}*${reminderNote}\n`;
+          text += `   Status: *Keine Daten eingegeben*\n`;
+          text += `   Erinnerungen: *${dailyFirstReminders.has(name) ? 'Zwei gesendet' : 'Eine gesendet'}*\n`;
+        } else {
+          // Kierownik wprowadził dane
+          if (notAssigned > 0) {
+            const tourNumbers = unassignedTours.map(tour => tour.tour_number).join(', ');
+            text += `🟡 *${name}*\n`;
+            text += `   Status: *Daten eingegeben*\n`;
+            text += `   Ausgefahren: *${assigned}*\n`;
+            text += `   Nicht ausgefahren: *${notAssigned}*\n`;
+            text += `   _Nicht ausgefahrene: ${tourNumbers}_\n`;
+          } else {
+            text += `🟢 *${name}*\n`;
+            text += `   Status: *Alle Touren ausgefahren*\n`;
+            text += `   Ausgefahren: *${assigned}/${total}*\n`;
+          }
+        }
+        text += '\n';
+      } catch (locError) {
+        console.error('Błąd dla lokalizacji', name + ':', locError);
+        text += `🔴 *${name}*\n`;
+        text += '   _Fehler beim Abrufen_\n\n';
+      }
     }
 
+    text += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n';
+
+    if (needsReminderCount > 0) {
+      text += `🚨 *${needsReminderCount} Standorte* haben noch keine Daten eingegeben!\n`;
+      if (secondRemindersCount > 0) {
+        text += `⚠️ *${secondRemindersCount} davon* benötigten bereits 2 Erinnerungen!\n`;
+      }
+      text += '\n';
+    } else {
+      text += '✅ *Alle Standorte haben Daten eingegeben*\n\n';
+    }
+
+    text += '_Automatische Nachricht um 10:30 Uhr_\n';
+    text += '_Manager wurden entsprechend informiert_\n\n';
+    text += '🤖 _Dies ist eine automatische Nachricht_';
+
     // Wyślij do grupy WhatsApp
-    await client.sendMessage(TOUR_GROUP_ID, fancyMessage);
+    await client.sendMessage(TOUR_GROUP_ID, text);
 
     // Reset trackerów o północy następnego dnia
     setTimeout(() => {
       dailyFirstReminders.clear();
     }, 24 * 60 * 60 * 1000 - (Date.now() % (24 * 60 * 60 * 1000)));
 
-    // Oblicz statystyki dla powiadomienia Telegram
-    let totalIssues = 0;
-    let secondRemindersCount = 0;
-
-    for (const name in locations) {
-      const info = locations[name];
-      try {
-        const query = 'SELECT COUNT(*) as count FROM tours t JOIN locations l ON t.location_id = l.id LEFT JOIN assignments a ON t.tour_number = a.tour_number AND t.location_id = a.location_id AND a.assignment_date = ? WHERE a.id IS NULL AND l.unique_slug = ?';
-        const [rows] = await db.query(query, [today, info.slug]);
-        const notAssigned = rows[0].count;
-
-        if (notAssigned > 0) {
-          totalIssues += notAssigned;
-          if (dailyFirstReminders.has(name)) {
-            secondRemindersCount++;
-          }
-        }
-      } catch (locError) {
-        console.error(`Błąd obliczania statystyk dla ${name}:`, locError);
-      }
-    }
-
     // Powiadom na Telegram o wysłaniu
     const time = new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' });
-    const summary = totalIssues > 0 ?
-      `📤 FANCY Tour-Dashboard gesendet um ${time}. Problem: ${totalIssues} nicht zugewiesen. ${secondRemindersCount} Standorte benötigten 2 Erinnerungen.` :
-      `📤 FANCY Tour-Dashboard gesendet um ${time}. Perfekte Performance! ✅`;
+    const summary = needsReminderCount > 0 ?
+      `📤 Tour-Zusammenfassung gesendet um ${time}. Problem: ${needsReminderCount} Standorte ohne Daten. ${secondRemindersCount} benötigten 2 Erinnerungen.` :
+      `📤 Tour-Zusammenfassung gesendet um ${time}. Alle Daten eingegeben! ✅`;
 
     await telegram.sendMessage(TELEGRAM_CHAT_ID, summary);
-    console.log('📤 Fancy Tour-Dashboard an WhatsApp-Gruppe gesendet');
+    console.log('📤 Tägliche Tour-Zusammenfassung an WhatsApp-Gruppe gesendet');
 
   } catch (error) {
-    console.error('❌ Fehler beim Senden des fancy Dashboards:', error);
-    await telegram.sendMessage(TELEGRAM_CHAT_ID, `❌ Fehler bei fancy Tour-Dashboard: ${error.message}`);
+    console.error('❌ Fehler beim Senden der täglichen Zusammenfassung:', error);
+    await telegram.sendMessage(TELEGRAM_CHAT_ID, `❌ Fehler bei täglicher Tour-Zusammenfassung: ${error.message}`);
   }
 }
 
@@ -850,11 +610,9 @@ async function generateTourStatistics(period = 'week') {
   let startDate, endDate;
 
   if (period === 'week') {
-    // Ostatni tydzień
     startDate = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
     endDate = today;
   } else if (period === 'month') {
-    // Ostatni miesiąc
     startDate = new Date(today.getFullYear(), today.getMonth() - 1, today.getDate());
     endDate = today;
   }
@@ -873,7 +631,6 @@ async function generateTourStatistics(period = 'week') {
       const info = locations[name];
 
       try {
-        // Pobierz wszystkie toury dla lokalizacji
         const queryTotalTours = `
           SELECT COUNT(*) as total_days
           FROM (
@@ -885,7 +642,6 @@ async function generateTourStatistics(period = 'week') {
           ) as distinct_days
         `;
 
-        // Pobierz dni z przypisanymi wszystkimi turami
         const queryCompleteDays = `
           SELECT COUNT(*) as complete_days
           FROM (
@@ -901,7 +657,6 @@ async function generateTourStatistics(period = 'week') {
           ) as complete_day_stats
         `;
 
-        // Pobierz dni z problemami (nie wszystkie toury przypisane)
         const queryProblemDays = `
           SELECT COUNT(*) as problem_days
           FROM (
@@ -983,7 +738,7 @@ async function generateInspectionStatistics() {
     ).length;
     const okVehicles = totalVehicles - expiredVehicles - expiring30Vehicles;
 
-    // Znajdź najgorzej punktowane pojazdy
+    // Najgorsze pojazdy
     const worstVehicles = Object.entries(vehicleGroups)
       .filter(([plate, group]) => group.some(insp => insp.isExpired))
       .map(([plate, group]) => {
@@ -994,7 +749,7 @@ async function generateInspectionStatistics() {
       .sort((a, b) => b.maxOverdue - a.maxOverdue)
       .slice(0, 5);
 
-    // Statystyki typów przegladów
+    // Statystyki typów
     const typeStats = {};
     inspections.forEach(insp => {
       if (!typeStats[insp.typ]) {
@@ -1009,14 +764,12 @@ async function generateInspectionStatistics() {
     stats += `📅 *Stand:* ${new Date().toLocaleDateString('de-DE')}\n\n`;
     stats += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n\n';
 
-    // Gesamtstatistik
     stats += '📈 *ÜBERSICHT*\n';
     stats += `🚗 Fahrzeuge gesamt: *${totalVehicles}*\n`;
     stats += `🔴 Mit überfälligen: *${expiredVehicles}* (${Math.round((expiredVehicles/totalVehicles)*100)}%)\n`;
     stats += `🟡 Mit ablaufenden: *${expiring30Vehicles}* (${Math.round((expiring30Vehicles/totalVehicles)*100)}%)\n`;
     stats += `🟢 Alles aktuell: *${okVehicles}* (${Math.round((okVehicles/totalVehicles)*100)}%)\n\n`;
 
-    // Schlimmste Fälle
     if (worstVehicles.length > 0) {
       stats += '🚨 *KRITISCHSTE FAHRZEUGE*\n';
       worstVehicles.forEach((vehicle, index) => {
@@ -1026,7 +779,6 @@ async function generateInspectionStatistics() {
       });
     }
 
-    // Statistik nach Prüfungstyp
     stats += '📋 *NACH PRÜFUNGSTYP*\n';
     Object.entries(typeStats).forEach(([type, data]) => {
       const expiredRate = Math.round((data.expired / data.total) * 100);
@@ -1066,7 +818,7 @@ cron.schedule('30 7 * * 1-5', async () => {
   timezone: "Europe/Berlin"
 });
 
-// 3. NOWE: Drugie przypomnienie - poniedziałek-piątek o 10:00
+// 3. Drugie przypomnienie - poniedziałek-piątek o 10:00
 cron.schedule('0 10 * * 1-5', async () => {
   console.log('🚨 Sprawdzam nieprzypisane toury i wysyłam drugie przypomnienia kierownikom...');
   await checkUnassignedToursSecondReminder();
@@ -1120,6 +872,12 @@ telegram.onText(/\/logi/, async (msg) => {
   telegram.sendMessage(msg.chat.id, '📁 Logs: /root/.pm2/logs/tourbot-out.log');
 });
 
+// Logi
+telegram.onText(/\/logi/, async (msg) => {
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  telegram.sendMessage(msg.chat.id, '📁 Logs: /root/.pm2/logs/tourbot-out.log');
+});
+
 // Harmonogram automatycznych zadań
 telegram.onText(/\/harmonogram/, (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
@@ -1151,8 +909,6 @@ telegram.onText(/\/harmonogram/, (msg) => {
 
   telegram.sendMessage(msg.chat.id, schedule);
 });
-
-// ==================== KOMENDY LOKALIZACJI ====================
 
 // Dodaj lokalizację
 telegram.onText(/\/dodaj (.+)/, (msg, match) => {
@@ -1215,8 +971,6 @@ telegram.onText(/\/lista/, (msg) => {
 
   telegram.sendMessage(msg.chat.id, out);
 });
-
-// ==================== KOMENDY TOUR ====================
 
 // Podgląd nieprzypisanych tour
 telegram.onText(/\/podglad/, async (msg) => {
@@ -1328,7 +1082,7 @@ telegram.onText(/\/test_kierownik (.+)/, async (msg, match) => {
 
       telegram.sendMessage(msg.chat.id, `✅ Test-Nachricht gesendet an ${nazwa} (${rows[0].count} nieprzypisane Touren)`);
     } else {
-      telegram.sendMessage(msg.chat.id, `ℹ️ ${nazwa}: Alle Touren sind zugewiesen - keine Nachricht erforderlich`);
+      telegram.sendMessage(msg.chat.id, `ℹ️ ${nazwa}: Kierownik już wprowadził dane - wiadomość nie byłaby wysłana`);
     }
   } catch (error) {
     telegram.sendMessage(msg.chat.id, '❌ Błąd: ' + error.message);
@@ -1339,89 +1093,7 @@ telegram.onText(/\/test_kierownik (.+)/, async (msg, match) => {
 telegram.onText(/\/test_grupa/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
   telegram.sendMessage(msg.chat.id, '📤 *Wysyłam test podsumowania...*');
-
-  try {
-    // Stwórz test wersję wiadomości grupowej
-    const today = new Date().toISOString().split('T')[0];
-
-    let text = '📋 *TOUR STATUSÜBERSICHT - TEST*\n\n';
-    text += `📅 *Datum:* ${today}\n`;
-    text += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n\n';
-
-    let totalIssues = 0;
-    let secondRemindersCount = 0;
-
-    for (const name in locations) {
-      const info = locations[name];
-
-      try {
-        const queryAllTours = 'SELECT COUNT(*) AS count FROM tours t JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ?';
-        const [allTours] = await db.query(queryAllTours, [info.slug]);
-
-        const queryAssigned = 'SELECT COUNT(*) AS count FROM assignments a JOIN tours t ON a.tour_number = t.tour_number JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ? AND a.assignment_date = ?';
-        const [assignedTours] = await db.query(queryAssigned, [info.slug, today]);
-
-        // Pobierz numery nieprzypisanych tour
-        const queryUnassignedTours = `
-          SELECT t.tour_number
-          FROM tours t
-          JOIN locations l ON t.location_id = l.id
-          LEFT JOIN assignments a ON t.tour_number = a.tour_number
-            AND t.location_id = a.location_id
-            AND a.assignment_date = ?
-          WHERE a.id IS NULL AND l.unique_slug = ?
-          ORDER BY t.tour_number
-        `;
-        const [unassignedTours] = await db.query(queryUnassignedTours, [today, info.slug]);
-
-        const total = allTours[0].count;
-        const assigned = assignedTours[0].count;
-        const notAssigned = total - assigned;
-
-        if (notAssigned > 0) {
-          totalIssues += notAssigned;
-          if (dailyFirstReminders.has(name)) {
-            secondRemindersCount++;
-          }
-        }
-
-        const status = notAssigned > 0 ? '🔴' : '🟢';
-        const reminderNote = notAssigned > 0 && dailyFirstReminders.has(name) ? ' ⚠️' : '';
-
-        text += `${status} *${name}*${reminderNote}\n`;
-        text += `   Zugewiesen: *${assigned}*\n`;
-        text += `   Nicht zugewiesen: *${notAssigned}*\n`;
-
-        // Dodaj numery nieprzypisanych tour
-        if (notAssigned > 0) {
-          const tourNumbers = unassignedTours.map(tour => tour.tour_number).join(', ');
-          text += `   _Touren: ${tourNumbers}_\n`;
-        }
-
-        if (notAssigned > 0 && dailyFirstReminders.has(name)) {
-          text += `   _Zwei Erinnerungen gesendet_\n`;
-        }
-        text += '\n';
-      } catch (locError) {
-        console.error('Błąd dla lokalizacji', name + ':', locError);
-        text += `🔴 *${name}*\n`;
-        text += '   _Fehler beim Abrufen_\n\n';
-      }
-    }
-
-    text += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n';
-    if (secondRemindersCount > 0) {
-      text += `🚨 *${secondRemindersCount} Standorte* benötigten 2 Erinnerungen!\n\n`;
-    }
-    text += '_TEST - Automatische Nachricht um 10:30 Uhr_\n';
-    text += '_Manager wurden entsprechend informiert_\n\n';
-    text += '🤖 _Dies ist eine automatische TEST-Nachricht_';
-
-    await client.sendMessage(TOUR_GROUP_ID, text);
-    telegram.sendMessage(msg.chat.id, '✅ Test-Zusammenfassung an Gruppe gesendet');
-  } catch (error) {
-    telegram.sendMessage(msg.chat.id, '❌ Błąd testu grupy: ' + error.message);
-  }
+  await sendDailySummaryToGroup();
 });
 
 // Test automatycznych powiadomień kierowników
@@ -1431,14 +1103,15 @@ telegram.onText(/\/test_auto_kierownicy/, async (msg) => {
   await checkUnassignedToursAndNotifyManagers();
 });
 
-// NOWE: Test drugiego przypomnienia
+// Test drugiego przypomnienia
 telegram.onText(/\/test_drugie_przypomnienie/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
   telegram.sendMessage(msg.chat.id, '🚨 *Test drugiego przypomnienia...*');
   await checkUnassignedToursSecondReminder();
 });
 
-// NOWE: Podgląd wiadomości grupowej
+// PODGLĄDY WIADOMOŚCI
+// Podgląd wiadomości grupowej
 telegram.onText(/\/podglad_grupa/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
 
@@ -1446,7 +1119,6 @@ telegram.onText(/\/podglad_grupa/, async (msg) => {
     telegram.sendMessage(msg.chat.id, '📊 *Generuję podgląd wiadomości grupowej...*');
     const today = new Date().toISOString().split('T')[0];
 
-    // Użyj tej samej logiki co w sendDailySummaryToGroup
     let text = '📋 *TOUR STATUSÜBERSICHT*\n\n';
     text += `📅 *Datum:* ${today}\n`;
     text += '▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️▫️\n\n';
@@ -1458,7 +1130,6 @@ telegram.onText(/\/podglad_grupa/, async (msg) => {
       const info = locations[name];
 
       try {
-        // Sprawdź czy kierownik wprowadził jakiekolwiek dane
         const queryAnyAssignments = `
           SELECT COUNT(*) as assignments_count
           FROM assignments a
@@ -1474,7 +1145,6 @@ telegram.onText(/\/podglad_grupa/, async (msg) => {
         const queryAssigned = 'SELECT COUNT(*) AS count FROM assignments a JOIN tours t ON a.tour_number = t.tour_number JOIN locations l ON t.location_id = l.id WHERE l.unique_slug = ? AND a.assignment_date = ?';
         const [assignedTours] = await db.query(queryAssigned, [info.slug, today]);
 
-        // Pobierz numery nieprzypisanych tour
         const queryUnassignedTours = `
           SELECT t.tour_number
           FROM tours t
@@ -1493,7 +1163,6 @@ telegram.onText(/\/podglad_grupa/, async (msg) => {
         const hasAssignments = assignmentCheck[0].assignments_count > 0;
 
         if (!hasAssignments) {
-          // Kierownik nie wprowadził żadnych danych - potrzebuje przypomnienia
           needsReminderCount++;
           if (dailyFirstReminders.has(name)) {
             secondRemindersCount++;
@@ -1504,7 +1173,6 @@ telegram.onText(/\/podglad_grupa/, async (msg) => {
           text += `   Status: *Keine Daten eingegeben*\n`;
           text += `   Erinnerungen: *${dailyFirstReminders.has(name) ? 'Zwei gesendet' : 'Eine gesendet'}*\n`;
         } else {
-          // Kierownik wprowadził dane
           if (notAssigned > 0) {
             const tourNumbers = unassignedTours.map(tour => tour.tour_number).join(', ');
             text += `🟡 *${name}*\n`;
@@ -1542,7 +1210,6 @@ telegram.onText(/\/podglad_grupa/, async (msg) => {
     text += '_Manager wurden entsprechend informiert_\n\n';
     text += '🤖 _Dies ist eine automatische Nachricht_';
 
-    // Wyślij jako podgląd z oznaczeniem
     const previewMessage = `🔍 *PODGLĄD WIADOMOŚCI GRUPOWEJ*\n\n━━━━━━━━━━━━━━━━━━━━━━━\n\n${text}\n\n━━━━━━━━━━━━━━━━━━━━━━━\n\n_To jest tylko podgląd - nie zostało wysłane na grupę_`;
     telegram.sendMessage(msg.chat.id, previewMessage);
   } catch (error) {
@@ -1550,7 +1217,7 @@ telegram.onText(/\/podglad_grupa/, async (msg) => {
   }
 });
 
-// NOWE: Podgląd wiadomości do kierownika (pierwsza)
+// Podgląd wiadomości do kierownika (pierwsza)
 telegram.onText(/\/podglad_kierownik (.+)/, async (msg, match) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
 
@@ -1569,14 +1236,14 @@ telegram.onText(/\/podglad_kierownik (.+)/, async (msg, match) => {
       const previewMessage = `🔍 *PODGLĄD WIADOMOŚCI DLA KIEROWNIKA*\n*Lokalizacja: ${nazwa}*\n*Typ: Pierwsze przypomnienie*\n\n━━━━━━━━━━━━━━━━━━━━━━━\n\n${managerMessage}\n\n━━━━━━━━━━━━━━━━━━━━━━━\n\n_To jest tylko podgląd - nie zostało wysłane_`;
       telegram.sendMessage(msg.chat.id, previewMessage);
     } else {
-      telegram.sendMessage(msg.chat.id, `ℹ️ ${nazwa}: Brak nieprzypisanych tour - wiadomość nie byłaby wysłana`);
+      telegram.sendMessage(msg.chat.id, `ℹ️ ${nazwa}: Kierownik już wprowadził dane - wiadomość nie byłaby wysłana`);
     }
   } catch (error) {
     telegram.sendMessage(msg.chat.id, '❌ Błąd podglądu kierownika: ' + error.message);
   }
 });
 
-// NOWE: Podgląd drugiego przypomnienia do kierownika
+// Podgląd drugiego przypomnienia do kierownika
 telegram.onText(/\/podglad_kierownik2 (.+)/, async (msg, match) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
 
@@ -1595,14 +1262,14 @@ telegram.onText(/\/podglad_kierownik2 (.+)/, async (msg, match) => {
       const previewMessage = `🔍 *PODGLĄD DRUGIEJ WIADOMOŚCI DLA KIEROWNIKA*\n*Lokalizacja: ${nazwa}*\n*Typ: Drugie przypomnienie (dringende)*\n\n━━━━━━━━━━━━━━━━━━━━━━━\n\n${managerMessage}\n\n━━━━━━━━━━━━━━━━━━━━━━━\n\n_To jest tylko podgląd - nie zostało wysłane_`;
       telegram.sendMessage(msg.chat.id, previewMessage);
     } else {
-      telegram.sendMessage(msg.chat.id, `ℹ️ ${nazwa}: Brak nieprzypisanych tour - wiadomość nie byłaby wysłana`);
+      telegram.sendMessage(msg.chat.id, `ℹ️ ${nazwa}: Kierownik już wprowadził dane - wiadomość nie byłaby wysłana`);
     }
   } catch (error) {
     telegram.sendMessage(msg.chat.id, '❌ Błąd podglądu drugiego przypomnienia: ' + error.message);
   }
 });
 
-// NOWE: Podgląd wszystkich kierowników - pierwsze przypomnienie
+// Podgląd wszystkich kierowników - pierwsze przypomnienie
 telegram.onText(/\/podglad_wszyscy_kierownicy/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
 
@@ -1622,7 +1289,7 @@ telegram.onText(/\/podglad_wszyscy_kierownicy/, async (msg) => {
         allPreviews += `${managerMessage}\n\n`;
         allPreviews += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
       } else {
-        allPreviews += `✅ *${nazwa}*: Wszystkie toury przypisane - brak wiadomości\n\n`;
+        allPreviews += `✅ *${nazwa}*: Kierownik już wprowadził dane - brak wiadomości\n\n`;
       }
     }
 
@@ -1634,7 +1301,7 @@ telegram.onText(/\/podglad_wszyscy_kierownicy/, async (msg) => {
   }
 });
 
-// NOWE: Podgląd wszystkich kierowników - drugie przypomnienie
+// Podgląd wszystkich kierowników - drugie przypomnienie
 telegram.onText(/\/podglad_wszyscy_kierownicy2/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
 
@@ -1654,7 +1321,7 @@ telegram.onText(/\/podglad_wszyscy_kierownicy2/, async (msg) => {
         allPreviews += `${managerMessage}\n\n`;
         allPreviews += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
       } else {
-        allPreviews += `✅ *${nazwa}*: Wszystkie toury przypisane - brak wiadomości\n\n`;
+        allPreviews += `✅ *${nazwa}*: Kierownik już wprowadził dane - brak wiadomości\n\n`;
       }
     }
 
@@ -1666,9 +1333,7 @@ telegram.onText(/\/podglad_wszyscy_kierownicy2/, async (msg) => {
   }
 });
 
-// ==================== KOMENDY PRZEGLADÓW ====================
-
-// Status przegladów
+// Fleet status
 telegram.onText(/\/fleet_status/, (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
   telegram.sendMessage(msg.chat.id, '🚗 *Fleet Überwachung*\n\n✅ Status: Aktiv\n📅 Automatisch: Jeden Montag 10:00\n📱 Format: Mobile-optimiert');
@@ -1678,48 +1343,7 @@ telegram.onText(/\/fleet_status/, (msg) => {
 telegram.onText(/\/test_fleet/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
   telegram.sendMessage(msg.chat.id, '🔄 *Starte Test*\nPrüfungen werden gesendet...');
-
-  try {
-    const inspections = await fetchAllInspectionData();
-
-    if (inspections.length === 0) {
-      throw new Error('Nie pobrano żadnych danych o przegladach');
-    }
-
-    // Utwórz test wiadomość
-    let message = createInspectionMessage(inspections);
-
-    // Zamień na wersję TEST
-    message = message.replace('🤖 _Dies ist eine automatische Nachricht_', '🤖 _Dies ist eine automatische TEST-Nachricht_');
-    message = message.replace('_Automatische Nachricht_\n_Jeden Montag um 10:00 Uhr_', '_TEST - Automatische Nachricht_\n_TEST - Jeden Montag um 10:00 Uhr_');
-
-    // Wyślij na WhatsApp grupę
-    await client.sendMessage(FLEET_GROUP_ID, message);
-
-    // Policz pojazdy dla podsumowania
-    const vehicleGroups = {};
-    inspections.forEach(inspection => {
-      const plate = inspection.license_plate;
-      if (!vehicleGroups[plate]) {
-        vehicleGroups[plate] = [];
-      }
-      vehicleGroups[plate].push(inspection);
-    });
-
-    const expiredVehicles = Object.values(vehicleGroups).filter(group =>
-      group.some(insp => insp.isExpired)
-    ).length;
-    const expiringVehicles = Object.values(vehicleGroups).filter(group =>
-      group.some(insp => insp.isExpiringSoon) && !group.some(insp => insp.isExpired)
-    ).length;
-
-    const summary = 'TEST-Prüfungsbericht gesendet: ' + expiredVehicles + ' Fahrzeuge überfällig, ' + expiringVehicles + ' Fahrzeuge ablaufend bald';
-    await telegram.sendMessage(TELEGRAM_CHAT_ID, '✅ ' + summary);
-
-  } catch (error) {
-    console.error('Błąd podczas testu przegladów:', error);
-    await telegram.sendMessage(TELEGRAM_CHAT_ID, '❌ TEST-Prüfungsfehler: ' + error.message);
-  }
+  await checkAndSendInspectionReport();
 });
 
 // Podgląd przegladów
@@ -1774,8 +1398,6 @@ telegram.onText(/\/fleet_preview/, async (msg) => {
     telegram.sendMessage(msg.chat.id, '❌ Błąd: ' + error.message);
   }
 });
-
-// ==================== NOWE KOMENDY STATYSTYK ====================
 
 // Statystyki tour - tydzień
 telegram.onText(/\/stats_tour/, async (msg) => {
@@ -1833,8 +1455,7 @@ telegram.onText(/\/raport_miesiec/, async (msg) => {
   }
 });
 
-// ==================== KOMENDY DIAGNOSTYCZNE ====================
-
+// DIAGNOSTYKA
 // Diagnostyka WhatsApp
 telegram.onText(/\/whatsapp_status/, async (msg) => {
   if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
@@ -1919,7 +1540,7 @@ telegram.onText(/\/pomoc/, (msg) => {
     `/harmonogram - Harmonogram zadań\n` +
     `/pomoc - Lista komend\n\n` +
     `*TOUR - TESTY:*\n` +
-    `/podglad - Podgląd nieprzypisanych\n` +
+    `/podglad - Podgląd statusu\n` +
     `/test_kierownik [nazwa] - Test wiadomości\n` +
     `/test_grupa - Test podsumowania\n` +
     `/test_auto_kierownicy - Test 1. przypomnienia\n` +
@@ -1973,7 +1594,7 @@ process.on('uncaughtException', (error) => {
 });
 
 console.log('🚀 Enhanced Universal Bot uruchamiany...');
-console.log('📋 Funkcje: Toury + Technische Prüfungen + Statystyki + Podglądy');
+console.log('📋 Funkcje: Toury + Technische Prüfungen + Statystyki');
 console.log('📅 Harmonogram automatyczny:');
 console.log('   • 7:30 (Pon-Pt) - Pierwsze powiadomienia (tylko jeśli brak danych)');
 console.log('   • 10:00 (Pon-Pt) - Drugie przypomnienia (tylko jeśli nadal brak danych)');
@@ -1981,7 +1602,6 @@ console.log('   • 10:00 (Poniedziałek) - Raport przegladów');
 console.log('   • 10:30 (Pon-Pt) - Inteligentne podsumowanie tour do grupy');
 console.log('   • 0:00 (Codziennie) - Reset trackerów');
 console.log('📊 Funkcje statystyk dostępne przez Telegram!');
-console.log('🔍 Podglądy wiadomości: /podglad_grupa, /podglad_kierownik [nazwa]');
 console.log('🧠 INTELIGENTNA LOGIKA: Jeśli kierownik już wprowadził dane - bez przypomnień!');
 console.log('🔢 Rozróżnienie: "nie wyjechało" vs "nie wprowadzono danych"');
 console.log('🤖 WSZYSTKIE wiadomości oznaczone jako automatyczne!');
