@@ -364,7 +364,7 @@ async function createManagerMessage(nazwa, info, today, isSecondReminder = false
       `Heute wurden noch keine Daten\n` +
       `für die Touren eingegeben.\n\n` +
       `${callToAction}\n` +
-      `🔗 https://tour.ltsog.de/?location=${info.slug}\n\n` +
+      `🔗 https://ltslog.de/?location=${info.slug}\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━━━\n` +
       `${timeNote}\n\n` +
       `_Bitte alle ausgefahrenen Touren markieren._\n` +
